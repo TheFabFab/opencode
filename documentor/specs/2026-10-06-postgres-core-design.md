@@ -1,9 +1,10 @@
 # Postgres core — design
 
-6 October 2026 · status: draft for review
+6 October 2026 · status: review answers folded in, awaiting approval
 
 This is the first of the pieces that make up "opencode agent pods". It covers
-where opencode keeps its database state and how tenants are kept apart. The
+where opencode keeps its database state and how users and their projects are
+kept apart. The
 writer lease across pods, the web tier's read views, the slim server build and
 pod packaging each get their own design.
 
@@ -19,8 +20,9 @@ Success means:
    sessions, messages, parts and events from Postgres.
 2. Upstream's unit suite passes against Postgres in the fork's CI, with every
    exception listed by name in this repository.
-3. Two tenants cannot read or write each other's rows, enforced by Postgres
-   privileges rather than by opencode's code.
+3. One user cannot read or write another's rows, and a project's process
+   cannot read another project's, enforced by Postgres privileges rather than
+   by opencode's code.
 4. A pod does no schema work when it starts.
 
 Out of scope: moving existing SQLite data, keeping SQLite working, the TUI and
@@ -82,29 +84,42 @@ where SQLite and Postgres really differ.
 
 Two call sites open a transaction with SQLite's `behavior: "immediate"`, which
 means "one writer at a time". The extension keeps that meaning: an immediate
-transaction first takes a transaction-scoped advisory lock. Within a tenant
-this serialises writers exactly as SQLite did, including two pods that are
-wrongly running for the same tenant.
+transaction first takes a transaction-scoped advisory lock. Within a scope
+this serialises writers exactly as SQLite did, including two processes that
+are wrongly running for the same scope.
 
-### 4. Tenant isolation: one schema and one role per tenant
+### 4. Isolation: one schema and one role per user scope
 
-**This departs from the starter spec, which asks for shared tables with
-row-level security. It needs your decision.**
+The starter spec asks for shared tables with row-level security. This design
+uses a Postgres schema and a login role per **scope** instead.
 
-Each tenant gets a Postgres schema holding the 19 tables and a login role that
-can use only that schema. opencode is given a URL and a schema name and uses
-unqualified table names, as upstream does. It contains no tenant logic at all.
+A scope is what DocuMentor already isolates today: one of a user's projects,
+or that user's account-wide `global` scope. DocuMentor runs one opencode
+process per scope, each with its own data directory and its own SQLite file,
+and sandboxes a project's process to that project's files. The Postgres layout
+keeps that unit:
+
+| Role | Its own schema | Other schemas |
+| --- | --- | --- |
+| A user's project scope | Read and write | None |
+| A user's `global` scope | Read and write | Read-only on every project schema of the same user |
+| Web tier | — | Read-only on all schemas |
+
+A project chat therefore cannot reach outside its project, and a global chat
+can read all of that user's chats. Nothing crosses from one user to another.
+
+opencode is given a URL and a schema name and uses unqualified table names, as
+upstream does. It contains no tenant or scope logic at all.
 
 Three facts from the code led here:
 
 1. **The pod is not trusted.** The shell tool runs arbitrary commands as the
    same user as opencode, so anything opencode can reach, the agent can reach.
    Row-level security keyed on a session variable is therefore not a boundary;
-   the credential itself must be limited to one tenant. Both designs need a
-   role per tenant.
-2. **Seven tables have keys that collide between tenants.** Every tenant has a
+   the credential itself must be limited to one scope.
+2. **Seven tables have keys that collide between scopes.** Every scope has a
    project with the id `global`, an `account_state` row with id 1, and so on.
-   In shared tables these keys must gain a tenant column, which changes
+   In shared tables these keys must gain a scope column, which changes
    conflict targets in upstream call sites such as `project.ts`. That is a
    permanent merge cost in code upstream changes often.
 3. **Tests need the same mechanism.** A fresh schema per test is the Postgres
@@ -112,12 +127,13 @@ Three facts from the code led here:
 
 Costs of this choice:
 
-- The catalog grows by 19 tables and 17 indexes per tenant. That is
-  comfortable into the low thousands of tenants and should be revisited before
-  about 5,000.
+- The catalog grows by 19 tables and 17 indexes per scope, and a user has one
+  scope per project plus one. This is comfortable into the low thousands of
+  schemas and should be revisited before about 5,000, which is roughly 1,000
+  to 1,500 users with a few projects each.
 - The migration Job loops over schemas.
-- The web tier addresses a tenant's data by schema name, and a query across
-  all tenants needs a union.
+- The web tier addresses a scope's data by schema name, and a query across
+  scopes needs a union.
 
 The alternative, shared tables with row-level security keyed on the role, stays
 possible later: it is a data move plus the key changes above.
@@ -134,15 +150,16 @@ possible later: it is a data move plus the key changes above.
 - Starting a server never changes a schema. It checks that the schema's applied
   migrations match what the binary expects and refuses to start otherwise.
 - A separate command applies migrations to one schema or to all of them, under
-  an advisory lock so two Jobs cannot run at once. It also creates a tenant's
-  schema and role.
+  an advisory lock so two Jobs cannot run at once. It also creates a scope's
+  schema and role, and grants a user's `global` role read access to that
+  user's project schemas.
 
 ### 6. Configuration
 
 | Setting | Meaning |
 | --- | --- |
 | `OPENCODE_DATABASE_URL` | Required. The server refuses to start without it |
-| `OPENCODE_DATABASE_SCHEMA` | The tenant schema; sent as `search_path` on every connection |
+| `OPENCODE_DATABASE_SCHEMA` | The scope's schema; sent as `search_path` on every connection |
 | `OPENCODE_DATABASE_POOL_MAX` | Connections per process, default 4 |
 
 `OPENCODE_DB`, the SQLite file path logic and the `opencode db` command, which
@@ -156,11 +173,12 @@ opens the `sqlite3` shell, are removed.
 | Upstream unit suite on Postgres in CI, one fresh schema per database layer | Behaviour matches upstream |
 | Column round-trip tests | All-digit strings stay strings; millisecond timestamps fit every time column; cost keeps full precision; NUL in JSON is accepted |
 | Migration tests | Unknown upstream migration fails the build; server refuses an unmigrated schema; two migration Jobs racing apply once |
-| Isolation test | Role A cannot read or write schema B |
+| Isolation test | A project role cannot read or write another schema; a `global` role can read its own user's project schemas, cannot write them, and cannot read another user's |
 | Writer test | Two connections appending to one session produce gap-free, ordered sequence numbers |
 | Compiled-binary test | The built binary creates no SQLite file and serves a scripted prompt from Postgres |
 
-CI adds a Postgres service container. SQLite-specific upstream tests, such as
+CI adds a Postgres 18 service container, the current stable major and the one
+production will run. SQLite-specific upstream tests, such as
 the legacy migration journal import, are deleted and listed in
 `documentor/upstream-test-exceptions.md` with the reason for each.
 
@@ -172,22 +190,28 @@ workflows from `documentor` carried over. `documentor` stays on unmodified
 
 ## Consequences for the later pieces
 
-- **Warm pool.** A warm pod does not know its tenant, so it cannot hold a
-  tenant connection before it is claimed. The claim has to deliver the tenant's
-  credential, and the database layer has to connect at that moment. This adds
-  one connection setup to the claim-to-first-response budget.
-- **Connections.** One pool per pod means the total is pods × pool size. A
+- **Warm pool.** A warm pod does not know its user, so it cannot hold a scope's
+  connection before it is claimed. The claim has to deliver the credentials,
+  and each opencode process has to connect at that moment. This adds one
+  connection setup to the claim-to-first-response budget.
+- **Processes in a pod.** A user's pod runs one opencode process per scope, as
+  today. Each holds only its own scope's credential, so the pod's sandbox has
+  to keep a project process from reading another process's environment.
+- **Connections.** One pool per opencode process means the total is running
+  scopes × pool size. A
   pooler in front of Postgres is likely before a few hundred concurrent pods.
-- **Web tier reads.** The views the web tier reads live in each tenant schema
+- **Web tier reads.** The views the web tier reads live in each scope's schema
   and are created by the same migration command.
 - **DocuMentor today reads opencode's SQLite file** for chat history, paging
   and search, and its backup inventory names that file. Both change at
   integration.
 
-## Open questions
+## Decisions taken in review (6 October 2026)
 
-1. Schema and role per tenant, as recommended, or shared tables with row-level
-   security as in the starter spec?
-2. Is a tenant a user, or a thesis project?
-3. Which Postgres version and hosting will production use? The spike ran on
-   18.4.
+1. Schema and role per scope, not shared tables with row-level security.
+2. The isolation boundary between people is the user. Inside a user, each
+   project is its own scope and the `global` scope can read all of them.
+3. Production runs the current stable Postgres major, 18.
+
+One assumption remains to confirm: the `global` scope reads project chats but
+does not write to them.
