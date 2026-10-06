@@ -7,7 +7,6 @@ import { makeGlobalNode } from "../effect/app-node"
 import { AbsolutePath, optional } from "../schema"
 import { ProjectSchema } from "./schema"
 import { ProjectDirectoryTable } from "./sql"
-import type { EffectPgDatabase } from "drizzle-orm/effect-postgres"
 
 export interface Directory {
   readonly directory: AbsolutePath
@@ -28,8 +27,7 @@ export const RemoveInput = Schema.Struct({
 })
 export type RemoveInput = typeof RemoveInput.Type
 
-type DatabaseClient = EffectPgDatabase
-export type Transaction = Parameters<Parameters<DatabaseClient["transaction"]>[0]>[0]
+export type Transaction = Database.Transaction
 
 export const ListInput = Schema.Struct({
   projectID: ProjectSchema.ID,

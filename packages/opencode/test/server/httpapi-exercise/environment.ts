@@ -14,12 +14,13 @@ process.env.OPENCODE_DISABLE_SHARE = "true"
 export const exerciseConfigDirectory = path.join(exerciseGlobalRoot, "config", "opencode")
 export const exerciseDataDirectory = path.join(exerciseGlobalRoot, "data", "opencode")
 
-const preserveExerciseDatabase = !!process.env.OPENCODE_HTTPAPI_EXERCISE_DB
-export const exerciseDatabasePath =
-  process.env.OPENCODE_HTTPAPI_EXERCISE_DB ??
-  path.join(process.env.TMPDIR ?? "/tmp", `opencode-httpapi-exercise-${process.pid}.db`)
-process.env.OPENCODE_DB = exerciseDatabasePath
-Flag.OPENCODE_DB = exerciseDatabasePath
+// The exerciser runs outside `bun test`, so it asks for its own throwaway schema here.
+process.env.OPENCODE_DATABASE_URL =
+  process.env.OPENCODE_TEST_DATABASE_URL ?? "postgresql://postgres@127.0.0.1:5432/postgres"
+process.env.OPENCODE_DATABASE_EPHEMERAL = "1"
+delete process.env.OPENCODE_DATABASE_SCHEMA
+/** Where the exerciser's report says its data lives. */
+export const exerciseDatabasePath = "postgres (throwaway schema)"
 
 export const original = {
   OPENCODE_SERVER_PASSWORD: Flag.OPENCODE_SERVER_PASSWORD,
@@ -28,13 +29,6 @@ export const original = {
 
 export const cleanupExercisePaths = Effect.promise(async () => {
   const fs = await import("fs/promises")
-  if (!preserveExerciseDatabase) {
-    await Promise.all(
-      [exerciseDatabasePath, `${exerciseDatabasePath}-wal`, `${exerciseDatabasePath}-shm`].map((file) =>
-        fs.rm(file, { force: true }).catch(() => undefined),
-      ),
-    )
-  }
   if (!preserveExerciseGlobalRoot)
     await fs.rm(exerciseGlobalRoot, { recursive: true, force: true }).catch(() => undefined)
 })
