@@ -5,6 +5,7 @@ import * as PgClient from "@effect/sql-pg/PgClient"
 import * as EffectDrizzlePostgres from "drizzle-orm/effect-postgres"
 import { Context, Effect, Layer, Redacted } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
+import { DatabaseCollation } from "./collation"
 import { DatabaseMigration } from "./migration"
 
 const makeDatabase = EffectDrizzlePostgres.makeWithDefaults()
@@ -39,8 +40,10 @@ const layer = Layer.unwrap(
         if (ephemeral) {
           yield* db.run(`CREATE SCHEMA "${schema}"`)
           yield* Effect.addFinalizer(() => db.run(`DROP SCHEMA "${schema}" CASCADE`).pipe(Effect.ignore))
+          yield* DatabaseMigration.migrate(db)
         }
-        yield* DatabaseMigration.apply(db)
+        yield* DatabaseCollation.verify(db)
+        yield* DatabaseMigration.verify(db)
         return { db }
       }).pipe(Effect.orDie),
     ).pipe(Layer.provide(PgClient.layer({ url: Redacted.make(url), maxConnections: 4 }).pipe(Layer.orDie)))
