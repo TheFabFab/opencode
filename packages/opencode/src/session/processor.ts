@@ -2,7 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema, Semaphore } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -114,6 +114,13 @@ const layer = Layer.effect(
       }
       let aborted = false
 
+      // A tool part has two writers: this processor, as provider events arrive,
+      // and the running tool, as it reports progress. Each reads the stored part
+      // and writes it back, so the read and the write are held together; without
+      // that, one writer's update is lost when the other's lands in between.
+      const toolCallLock = Semaphore.makeUnsafe(1)
+      const exclusive = <A, E, R>(effect: Effect.Effect<A, E, R>) => toolCallLock.withPermit(effect)
+
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
           providerID: input.model.providerID,
@@ -155,7 +162,7 @@ const layer = Layer.effect(
           sessionID: part.sessionID,
         }
         return part
-      })
+      }, exclusive)
 
       const completeToolCall = Effect.fn("SessionProcessor.completeToolCall")(function* (
         toolCallID: string,
@@ -181,7 +188,7 @@ const layer = Layer.effect(
           },
         })
         yield* settleToolCall(toolCallID)
-      })
+      }, exclusive)
 
       const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
         const match = yield* readToolCall(toolCallID)
@@ -202,7 +209,7 @@ const layer = Layer.effect(
         }
         yield* settleToolCall(toolCallID)
         return true
-      })
+      }, exclusive)
 
       const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
         if (!(reasoningID in ctx.reasoningMap)) return
@@ -250,7 +257,7 @@ const layer = Layer.effect(
           sessionID: part.sessionID,
         }
         return { call: ctx.toolcalls[input.id], part }
-      })
+      }, exclusive)
 
       const isFilePart = (value: unknown): value is SessionV1.FilePart => Schema.is(SessionV1.FilePart)(value)
 

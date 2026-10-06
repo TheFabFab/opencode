@@ -388,8 +388,12 @@ exports[`opencode CLI help-text snapshots every documented command emits stable 
 database tools
 
 Commands:
-  opencode db [query]     open an interactive sqlite3 shell or run a query                 [default]
-  opencode db path        print the database path
+  opencode db <query>     run a SQL query                                                  [default]
+  opencode db migrate     bring the schema named by OPENCODE_DATABASE_SCHEMA, or every schema with
+                          --all, up to date
+  opencode db provision   create a scope's schema and role; the role's password is read from
+                          OPENCODE_DATABASE_ROLE_PASSWORD
+  opencode db grant-read  let a role read a scope's schema
 
 Positionals:
   query  SQL query to execute                                                               [string]
@@ -609,15 +613,46 @@ Options:
       --token       GitHub personal access token (github_pat_********)                      [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db path --help 1`] = `
-"opencode db path
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db migrate --help 1`] = `
+"opencode db migrate
 
-print the database path
+bring the schema named by OPENCODE_DATABASE_SCHEMA, or every schema with --all, up to date
 
 Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --pure        run without external plugins                                           [boolean]
+      --all         migrate every schema that holds opencode's tables     [boolean] [default: false]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db provision --help 1`] = `
+"opencode db provision
+
+create a scope's schema and role; the role's password is read from OPENCODE_DATABASE_ROLE_PASSWORD
+
+Options:
+  -h, --help        show help                                                              [boolean]
+  -v, --version     show version number                                                    [boolean]
+      --print-logs  print logs to stderr                                                   [boolean]
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure        run without external plugins                                           [boolean]
+      --schema      the scope's schema                                           [string] [required]
+      --role        the role to grant                                            [string] [required]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db grant-read --help 1`] = `
+"opencode db grant-read
+
+let a role read a scope's schema
+
+Options:
+  -h, --help        show help                                                              [boolean]
+  -v, --version     show version number                                                    [boolean]
+      --print-logs  print logs to stderr                                                   [boolean]
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure        run without external plugins                                           [boolean]
+      --schema      the scope's schema                                           [string] [required]
+      --role        the role to grant                                            [string] [required]"
 `;
