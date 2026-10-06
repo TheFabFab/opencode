@@ -321,22 +321,32 @@ export const locationLayer = Layer.effect(
 
     const settle = Effect.fnUntraced(function* (attemptID: AttemptID, exit: Exit.Exit<Credential.OAuth, unknown>) {
       const now = yield* Clock.currentTimeMillis
-      const result = yield* SynchronizedRef.modify(attempts, (current) => {
-        const attempt = current.get(attemptID)
-        if (!attempt || attempt.status !== "pending") return [undefined, current]
-        const terminal: TerminalAttempt = Exit.isSuccess(exit)
-          ? { status: "complete", time: attempt.time, removeAt: now + terminalRetention }
-          : { status: "failed", message: message(exit.cause), time: attempt.time, removeAt: now + terminalRetention }
-        return [attempt, new Map(current).set(attemptID, terminal)]
-      })
+      // The credential is stored before the attempt reads as complete, and both
+      // happen inside one update of `attempts`: a caller that sees "complete"
+      // can list the credential, and a second settlement finds nothing pending.
+      const result = yield* SynchronizedRef.modifyEffect(attempts, (current) =>
+        Effect.gen(function* () {
+          const attempt = current.get(attemptID)
+          if (!attempt || attempt.status !== "pending") return [undefined, current] as const
+          if (Exit.isSuccess(exit)) {
+            const implementation = state
+              .get()
+              .integrations.get(attempt.integrationID)
+              ?.implementations.get(attempt.methodID)
+            yield* credentials.create({
+              integrationID: attempt.integrationID,
+              label: attempt.label ?? implementation?.label?.(exit.value),
+              value: exit.value,
+            })
+          }
+          const terminal: TerminalAttempt = Exit.isSuccess(exit)
+            ? { status: "complete", time: attempt.time, removeAt: now + terminalRetention }
+            : { status: "failed", message: message(exit.cause), time: attempt.time, removeAt: now + terminalRetention }
+          return [attempt, new Map(current).set(attemptID, terminal)] as const
+        }),
+      )
       if (!result) return
       if (Exit.isSuccess(exit)) {
-        const implementation = state.get().integrations.get(result.integrationID)?.implementations.get(result.methodID)
-        yield* credentials.create({
-          integrationID: result.integrationID,
-          label: result.label ?? implementation?.label?.(exit.value),
-          value: exit.value,
-        })
         yield* events.publish(Event.ConnectionUpdated, { integrationID: result.integrationID })
         yield* events.publish(Event.Updated, {})
       }
