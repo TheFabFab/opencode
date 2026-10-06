@@ -16,26 +16,31 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/storage/Database") {}
 
-const layer = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const db = yield* makeDatabase
-    const schema = process.env.OPENCODE_DATABASE_SCHEMA
-    if (schema) yield* db.run(`CREATE SCHEMA IF NOT EXISTS "${schema}"`)
-    yield* DatabaseMigration.apply(db)
-    return { db }
-  }).pipe(Effect.orDie),
-)
-
-function url() {
-  const value = new URL(process.env.OPENCODE_DATABASE_URL!)
-  const schema = process.env.OPENCODE_DATABASE_SCHEMA
-  if (schema) value.searchParams.set("options", `-c search_path=${schema}`)
-  return value.toString()
-}
+const layer = (schema: string | undefined, ephemeral: boolean) =>
+  Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const db = yield* makeDatabase
+      if (schema) yield* db.run(`CREATE SCHEMA IF NOT EXISTS "${schema}"`)
+      if (ephemeral)
+        yield* Effect.addFinalizer(() => db.run(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).pipe(Effect.ignore))
+      yield* DatabaseMigration.apply(db)
+      return { db }
+    }).pipe(Effect.orDie),
+  )
 
 export function layerFromPath(_filename: string) {
-  return layer.pipe(Layer.provide(PgClient.layer({ url: Redacted.make(url()), maxConnections: 4 }).pipe(Layer.orDie)))
+  return Layer.unwrap(
+    Effect.sync(() => {
+      const ephemeral = process.env.OPENCODE_DATABASE_EPHEMERAL === "1"
+      const schema = ephemeral ? `t_${crypto.randomUUID().replaceAll("-", "")}` : process.env.OPENCODE_DATABASE_SCHEMA
+      const value = new URL(process.env.OPENCODE_DATABASE_URL!)
+      if (schema) value.searchParams.set("options", `-c search_path=${schema}`)
+      return layer(schema, ephemeral).pipe(
+        Layer.provide(PgClient.layer({ url: Redacted.make(value.toString()), maxConnections: 2 }).pipe(Layer.orDie)),
+      )
+    }),
+  )
 }
 
 export function path() {
