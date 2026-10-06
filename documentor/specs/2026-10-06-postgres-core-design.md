@@ -74,6 +74,18 @@ same change is a merge conflict in a file we own, which is the signal we want.
 `jsonb` rejects the escaped NUL character (`\u0000`) inside strings, and tool
 output can contain it. The JSON column type replaces it with U+FFFD on write.
 
+### Text ordering
+
+Upstream pages through sessions and messages by ordering and comparing their
+text ids, which are built to sort by creation time in byte order. SQLite
+compares text byte by byte. Postgres uses the database's collation, and a
+locale collation such as `en_US.UTF-8` orders mixed-case ids differently, which
+would silently break paging.
+
+The database is therefore created with byte-order collation (`C` or
+`C.UTF-8`). The migration command and the server's start-up check both refuse a
+database with any other collation.
+
 ### 3. Query API: a typed extension, not a proxy
 
 A new package, `packages/effect-drizzle-pg`, adds `.get()`, `.all()` and
@@ -159,7 +171,7 @@ possible later: it is a data move plus the key changes above.
 
 | Setting | Meaning |
 | --- | --- |
-| `OPENCODE_DATABASE_URL` | Required. The server refuses to start without it |
+| `OPENCODE_DATABASE_URL` | Required. The server refuses to start without it, and refuses a non-local host unless the URL asks for verified TLS (`sslmode=verify-full`) |
 | `OPENCODE_DATABASE_SCHEMA` | The scope's schema; sent as `search_path` on every connection |
 | `OPENCODE_DATABASE_POOL_MAX` | Connections per process, default 4 |
 
@@ -173,6 +185,8 @@ opens the `sqlite3` shell, are removed.
 | Type check of every package | Call sites are compatible with Postgres types |
 | Upstream unit suite on Postgres in CI, one fresh schema per database layer | Behaviour matches upstream |
 | Column round-trip tests | All-digit strings stay strings; millisecond timestamps fit every time column; cost keeps full precision; NUL in JSON is accepted |
+| Collation test | A database with a locale collation is refused; mixed-case ids page in creation order |
+| Transport test | A non-local URL without verified TLS is refused |
 | Migration tests | Unknown upstream migration fails the build; server refuses an unmigrated schema; two migration Jobs racing apply once |
 | Isolation test | A project role cannot read or write another schema; a `global` role can read its own user's project schemas, cannot write them, and cannot read another user's |
 | Writer test | Two connections appending to one session produce gap-free, ordered sequence numbers |
@@ -198,6 +212,10 @@ workflows from `documentor` carried over. `documentor` stays on unmodified
 - **Processes in a pod.** A user's pod runs one opencode process per scope, as
   today. Each holds only its own scope's credential, so the pod's sandbox has
   to keep a project process from reading another process's environment.
+- **Encryption at rest.** Postgres has no built-in data encryption, so the
+  volume under Postgres is encrypted, and so are its backups. DocuMentor's
+  privacy notice already promises encrypted backups. Both are hosting
+  decisions and change nothing in this design.
 - **Connections.** One pool per opencode process means the total is running
   scopes × pool size. A
   pooler in front of Postgres is likely before a few hundred concurrent pods.
