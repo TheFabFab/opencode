@@ -245,7 +245,12 @@ describe("Integration", () => {
       )
 
       const attempt = yield* integrations.connection.oauth({ integrationID, methodID, inputs: {} })
-      yield* Effect.yieldNow
+      // The attempt settles in the background. Once it reads as complete its
+      // credential is stored, so the two are checked with nothing in between.
+      for (let poll = 0; poll < 400; poll++) {
+        if ((yield* integrations.attempt.status(attempt.attemptID)).status !== "pending") break
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 5)))
+      }
       expect(yield* integrations.attempt.status(attempt.attemptID)).toEqual({
         status: "complete",
         time: attempt.time,

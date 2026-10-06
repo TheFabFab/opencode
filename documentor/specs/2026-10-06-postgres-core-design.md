@@ -106,11 +106,13 @@ are wrongly running for the same scope.
 
 SQLite runs every query synchronously, so nothing else in the process can run
 between a read and the write that follows it. On Postgres every query yields.
-Two things in opencode depended on the old behaviour, and both are handled:
+Three things in opencode depended on the old behaviour, and all are handled:
 
 - **A tool part has two writers**, the processor and the running tool, and each
   reads the part and writes it back. A lock per processor holds each read and
   write together.
+- **An OAuth attempt was marked complete before its credential was stored.**
+  The credential is now stored first, inside the same update.
 - **Effect `4.0.0-beta.83` corrupts a fiber's state** when the fiber wakes
   another fiber that interrupts it synchronously and its cleanup then awaits
   anything. With a database connection in play that leaks the connection. The
