@@ -1,8 +1,9 @@
-import { sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { pgTable } from "drizzle-orm/pg-core"
+import { text } from "@opencode-ai/effect-drizzle-pg"
 import { SessionTable } from "../session/sql"
 import { Timestamps } from "../database/schema.sql"
 
-export const SessionShareTable = sqliteTable("session_share", {
+export const SessionShareTable = pgTable("session_share", {
   session_id: text()
     .primaryKey()
     .references(() => SessionTable.id, { onDelete: "cascade" }),

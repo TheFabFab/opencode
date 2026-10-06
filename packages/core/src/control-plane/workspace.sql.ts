@@ -1,20 +1,21 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
+import { pgTable, doublePrecision } from "drizzle-orm/pg-core"
+import { jsonb, text } from "@opencode-ai/effect-drizzle-pg"
 import { ProjectTable } from "../project/sql"
 import { ProjectV2 } from "../project"
 import { WorkspaceV2 } from "../workspace"
 
-export const WorkspaceTable = sqliteTable("workspace", {
+export const WorkspaceTable = pgTable("workspace", {
   id: text().$type<WorkspaceV2.ID>().primaryKey(),
   type: text().notNull(),
   name: text().notNull().default(""),
   branch: text(),
   directory: text(),
-  extra: text({ mode: "json" }),
+  extra: jsonb(),
   project_id: text()
     .$type<ProjectV2.ID>()
     .notNull()
     .references(() => ProjectTable.id, { onDelete: "cascade" }),
-  time_used: integer()
+  time_used: doublePrecision()
     .notNull()
     .$default(() => Date.now()),
 })

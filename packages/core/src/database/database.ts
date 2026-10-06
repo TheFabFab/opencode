@@ -1,57 +1,58 @@
 export * as Database from "./database"
 
-import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
-import { layer as sqliteLayer } from "#sqlite"
-import { Context, Effect, Layer } from "effect"
-import { Global } from "../global"
-import { Flag } from "../flag/flag"
-import { isAbsolute, join } from "path"
-import { DatabaseMigration } from "./migration"
-import { InstallationChannel } from "../installation/version"
+import "@opencode-ai/effect-drizzle-pg"
+import * as PgClient from "@effect/sql-pg/PgClient"
+import * as EffectDrizzlePostgres from "drizzle-orm/effect-postgres"
+import { Context, Effect, Layer, Redacted } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
+import { DatabaseMigration } from "./migration"
 
-const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
-type DatabaseShape = Effect.Success<typeof makeDatabase>
+const makeDatabase = EffectDrizzlePostgres.makeWithDefaults()
+
+export type Client = Effect.Success<typeof makeDatabase>
+export type Transaction = Parameters<Parameters<Client["transaction"]>[0]>[0]
 
 export interface Interface {
-  db: DatabaseShape
+  db: Client
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/storage/Database") {}
 
-const layer = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const db = yield* makeDatabase
+/** Where the process connects, read from the environment when a layer is built. */
+function target() {
+  const address = process.env.OPENCODE_DATABASE_URL
+  if (!address) throw new Error("OPENCODE_DATABASE_URL is not set")
+  const ephemeral = process.env.OPENCODE_DATABASE_EPHEMERAL === "1"
+  const schema = ephemeral ? `t_${crypto.randomUUID().replaceAll("-", "")}` : process.env.OPENCODE_DATABASE_SCHEMA
+  const url = new URL(address)
+  if (schema) url.searchParams.set("options", `-c search_path=${schema}`)
+  return { url: url.toString(), schema, ephemeral }
+}
 
-    yield* db.run("PRAGMA journal_mode = WAL")
-    yield* db.run("PRAGMA synchronous = NORMAL")
-    yield* db.run("PRAGMA busy_timeout = 5000")
-    yield* db.run("PRAGMA cache_size = -64000")
-    yield* db.run("PRAGMA foreign_keys = ON")
-    yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
-    yield* DatabaseMigration.apply(db)
-
-    return { db }
-  }).pipe(Effect.orDie),
+const layer = Layer.unwrap(
+  Effect.sync(() => {
+    const { url, schema, ephemeral } = target()
+    return Layer.effect(
+      Service,
+      Effect.gen(function* () {
+        const db = yield* makeDatabase
+        if (ephemeral) {
+          yield* db.run(`CREATE SCHEMA "${schema}"`)
+          yield* Effect.addFinalizer(() => db.run(`DROP SCHEMA "${schema}" CASCADE`).pipe(Effect.ignore))
+        }
+        yield* DatabaseMigration.apply(db)
+        return { db }
+      }).pipe(Effect.orDie),
+    ).pipe(Layer.provide(PgClient.layer({ url: Redacted.make(url), maxConnections: 4 }).pipe(Layer.orDie)))
+  }),
 )
 
-export function layerFromPath(filename: string) {
-  return layer.pipe(Layer.provide(sqliteLayer({ filename })))
+/**
+ * Upstream's tests ask for a database by file name. Every database here is the
+ * one the environment names, so the argument is unused.
+ */
+export function layerFromPath(_filename: string) {
+  return layer
 }
 
-export function path() {
-  if (Flag.OPENCODE_DB) {
-    if (Flag.OPENCODE_DB === ":memory:" || isAbsolute(Flag.OPENCODE_DB)) return Flag.OPENCODE_DB
-    return join(Global.Path.data, Flag.OPENCODE_DB)
-  }
-  if (
-    ["latest", "beta", "prod"].includes(InstallationChannel) ||
-    process.env.OPENCODE_DISABLE_CHANNEL_DB === "1" ||
-    process.env.OPENCODE_DISABLE_CHANNEL_DB === "true"
-  )
-    return join(Global.Path.data, "opencode.db")
-  return join(Global.Path.data, `opencode-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
-}
-
-export const node = makeGlobalNode({ service: Service, layer: layerFromPath(path()), deps: [] })
+export const node = makeGlobalNode({ service: Service, layer, deps: [] })

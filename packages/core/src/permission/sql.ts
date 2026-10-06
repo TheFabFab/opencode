@@ -1,10 +1,11 @@
-import { sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { pgTable, uniqueIndex } from "drizzle-orm/pg-core"
+import { text } from "@opencode-ai/effect-drizzle-pg"
 import { Timestamps } from "../database/schema.sql"
 import { ProjectV2 } from "../project"
 import { ProjectTable } from "../project/sql"
 import type { PermissionSaved } from "./saved"
 
-export const PermissionTable = sqliteTable(
+export const PermissionTable = pgTable(
   "permission",
   {
     id: text().$type<PermissionSaved.ID>().primaryKey(),
