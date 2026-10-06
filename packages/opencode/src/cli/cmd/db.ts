@@ -1,49 +1,64 @@
 import type { Argv } from "yargs"
-import { Database } from "@opencode-ai/core/database/database"
-import { Effect } from "effect"
 import { sql } from "drizzle-orm"
-import { effectCmd } from "../effect-cmd"
+import { Effect } from "effect"
+import { DatabaseCollation } from "@opencode-ai/core/database/collation"
+import { DatabaseConnect } from "@opencode-ai/core/database/connect"
+import { DatabaseMigration } from "@opencode-ai/core/database/migration"
+import { cmd } from "./cmd"
 
-const QueryCommand = effectCmd({
+// These commands run outside the application runtime. The runtime builds
+// `Database.Service`, which refuses a schema that is not migrated, and these
+// are the commands that create and migrate schemas.
+const run = <A>(effect: Effect.Effect<A, unknown>) => Effect.runPromise(effect)
+
+const QueryCommand = cmd({
   command: "$0 <query>",
   describe: "run a SQL query",
-  instance: false,
-  builder: (yargs: Argv) => {
-    return yargs
-      .positional("query", {
-        type: "string",
-        demandOption: true,
-        describe: "SQL query to execute",
-      })
-      .option("format", {
-        type: "string",
-        choices: ["json", "tsv"],
-        default: "tsv",
-        describe: "Output format",
-      })
-  },
-  handler: Effect.fn("Cli.db.query")(function* (args: { query?: string; format: string }) {
-    const query = args.query as string | undefined
-    if (query) {
-      const { db } = yield* Database.Service
-      const result = yield* db.all<Record<string, unknown>>(sql.raw(query)).pipe(Effect.orDie)
-      if (args.format === "json") console.log(JSON.stringify(result, null, 2))
-      else if (result.length > 0) {
-        const keys = Object.keys(result[0])
-        console.log(keys.join("\t"))
-        for (const row of result) console.log(keys.map((key) => row[key]).join("\t"))
-      }
-      return
+  builder: (yargs: Argv) =>
+    yargs
+      .positional("query", { type: "string", demandOption: true, describe: "SQL query to execute" })
+      .option("format", { type: "string", choices: ["json", "tsv"], default: "tsv", describe: "Output format" }),
+  async handler(args) {
+    const result = await run(DatabaseConnect.run((db) => db.all<Record<string, unknown>>(sql.raw(args.query))))
+    if (args.format === "json") console.log(JSON.stringify(result, null, 2))
+    else if (result.length > 0) {
+      const keys = Object.keys(result[0])
+      console.log(keys.join("\t"))
+      for (const row of result) console.log(keys.map((key) => row[key]).join("\t"))
     }
-  }),
+  },
 })
 
-export const DbCommand = effectCmd({
+const MigrateCommand = cmd({
+  command: "migrate",
+  describe: "bring the schema named by OPENCODE_DATABASE_SCHEMA, or every schema with --all, up to date",
+  builder: (yargs: Argv) =>
+    yargs.option("all", {
+      type: "boolean",
+      default: false,
+      describe: "migrate every schema that holds opencode's tables",
+    }),
+  async handler(args) {
+    const done = await run(
+      DatabaseConnect.run(
+        (db, target) =>
+          Effect.gen(function* () {
+            yield* DatabaseCollation.verify(db)
+            if (args.all) return yield* DatabaseMigration.migrateAll(db)
+            yield* DatabaseMigration.migrate(db)
+            yield* DatabaseMigration.verify(db)
+            return [target.schema ?? "(default)"]
+          }),
+        { schema: !args.all },
+      ),
+    )
+    console.log(`up to date: ${done.length === 0 ? "no schemas found" : done.join(", ")}`)
+  },
+})
+
+export const DbCommand = cmd({
   command: "db",
   describe: "database tools",
-  instance: false,
-  builder: (yargs: Argv) => {
-    return yargs.command(QueryCommand).demandCommand()
-  },
-  handler: Effect.fn("Cli.db")(function* () {}),
+  builder: (yargs: Argv) => yargs.command(QueryCommand).command(MigrateCommand).demandCommand(),
+  handler() {},
 })
