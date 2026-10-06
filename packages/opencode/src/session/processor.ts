@@ -3,6 +3,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema, Semaphore } from "effect"
+import { isDeepStrictEqual } from "node:util"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -27,6 +28,12 @@ import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
+
+/**
+ * Whether a stored tool input is the same as a fresh one. The stored copy has
+ * been through the database, which keeps JSON object keys in its own order.
+ */
+export const sameToolInput = (stored: unknown, fresh: unknown) => isDeepStrictEqual(stored, fresh)
 export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
@@ -369,7 +376,7 @@ const layer = Layer.effect(
                   part.type === "tool" &&
                   part.tool === value.name &&
                   part.state.status !== "pending" &&
-                  JSON.stringify(part.state.input) === JSON.stringify(input),
+                  sameToolInput(part.state.input, input),
               )
             ) {
               return
@@ -595,24 +602,30 @@ const layer = Layer.effect(
           { concurrency: "unbounded" },
         )
 
-        for (const toolCallID of Object.keys(ctx.toolcalls)) {
-          const match = yield* readToolCall(toolCallID)
-          if (!match) continue
-          const part = match.part
-          const end = Date.now()
-          const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
-          yield* session.updatePart({
-            ...part,
-            state: {
-              ...part.state,
-              status: "error",
-              error: "Tool execution aborted",
-              metadata: { ...metadata, interrupted: true },
-              time: { start: "time" in part.state ? part.state.time.start : end, end },
-            },
-          })
-        }
-        ctx.toolcalls = {}
+        // Under the same lock as the tool's own progress writes, so a late
+        // report cannot put an aborted part back to running.
+        yield* exclusive(
+          Effect.gen(function* () {
+            for (const toolCallID of Object.keys(ctx.toolcalls)) {
+              const match = yield* readToolCall(toolCallID)
+              if (!match) continue
+              const part = match.part
+              const end = Date.now()
+              const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
+              yield* session.updatePart({
+                ...part,
+                state: {
+                  ...part.state,
+                  status: "error",
+                  error: "Tool execution aborted",
+                  metadata: { ...metadata, interrupted: true },
+                  time: { start: "time" in part.state ? part.state.time.start : end, end },
+                },
+              })
+            }
+            ctx.toolcalls = {}
+          }),
+        )
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })

@@ -696,6 +696,23 @@ describe("Project.addSandbox and Project.removeSandbox", () => {
     }),
   )
 
+  it.live("sandboxes added at the same time are all kept", () =>
+    Effect.gen(function* () {
+      const project = yield* Project.Service
+      const tmp = yield* tmpdirScoped({ git: true })
+      const result = yield* project.fromDirectory(tmp)
+      const dirs = Array.from({ length: 6 }, (_, i) => path.join(tmp, `sandbox-${i}`))
+
+      yield* Effect.all(
+        dirs.map((dir) => project.addSandbox(result.project.id, dir)),
+        { concurrency: "unbounded" },
+      )
+
+      const found = yield* project.get(result.project.id)
+      expect([...(found?.sandboxes ?? [])].sort()).toEqual([...dirs].sort())
+    }),
+  )
+
   it.live("addSandbox emits GlobalBus event", () =>
     Effect.gen(function* () {
       const project = yield* Project.Service

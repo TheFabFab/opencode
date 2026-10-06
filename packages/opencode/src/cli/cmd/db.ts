@@ -40,20 +40,25 @@ const MigrateCommand = cmd({
       describe: "migrate every schema that holds opencode's tables",
     }),
   async handler(args) {
-    const done = await run(
+    const result = await run(
       DatabaseConnect.run(
         (db, target) =>
           Effect.gen(function* () {
             yield* DatabaseCollation.verify(db)
             if (args.all) return yield* DatabaseMigration.migrateAll(db)
+            if (!target.schema)
+              return yield* Effect.die("OPENCODE_DATABASE_SCHEMA is not set: name the schema to migrate, or pass --all")
             yield* DatabaseMigration.migrate(db)
             yield* DatabaseMigration.verify(db)
-            return [target.schema ?? "(default)"]
+            return { done: [target.schema], failed: [] }
           }),
         { schema: !args.all },
       ),
     )
-    console.log(`up to date: ${done.length === 0 ? "no schemas found" : done.join(", ")}`)
+    console.log(`up to date: ${result.done.length === 0 ? "no schemas found" : result.done.join(", ")}`)
+    for (const { schema, error } of result.failed)
+      console.error(`failed: ${schema}: ${error instanceof Error ? error.message : String(error)}`)
+    if (result.failed.length > 0) process.exitCode = 1
   },
 })
 

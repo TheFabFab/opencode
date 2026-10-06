@@ -96,11 +96,13 @@ transaction objects. It is typed, it does not rewrite rows, and it mirrors what
 unchanged against Postgres types, and the type checker reports every place
 where SQLite and Postgres really differ.
 
-Two call sites open a transaction with SQLite's `behavior: "immediate"`, which
-means "one writer at a time". The extension keeps that meaning: an immediate
-transaction first takes a transaction-scoped advisory lock. Within a scope
-this serialises writers exactly as SQLite did, including two processes that
-are wrongly running for the same scope.
+SQLite ran every transaction through one connection, so two never
+overlapped, and upstream's read-then-write code relies on that. The
+extension keeps that meaning for every transaction: each first takes a
+transaction-scoped advisory lock keyed on the schema. Within a scope this
+serialises writers exactly as SQLite did, including two processes that are
+wrongly running for the same scope. The two call sites that pass
+`behavior: "immediate"` get the same lock as the rest.
 
 ### Concurrency the swap exposes
 
@@ -182,8 +184,11 @@ possible later: it is a data move plus the key changes above.
 - A test fails when upstream's migration list contains an id the fork has
   neither ported nor declared a no-op. That is how a rebase tells us upstream
   changed the schema.
-- Starting a server never changes a schema. It checks that the schema's applied
-  migrations match what the binary expects and refuses to start otherwise.
+- Starting a server never changes a schema. It checks that the schema holds
+  every migration the binary expects and refuses to start otherwise. A schema
+  that also holds migrations the binary does not know, because a newer build
+  migrated it, is accepted: during a rolling deploy the older pods keep
+  starting.
 - Separate commands do the schema work: `opencode db migrate` for one schema or,
   with `--all`, every schema, under an advisory lock so two Jobs cannot run at
   once; `opencode db provision` to create a scope's schema and role; and

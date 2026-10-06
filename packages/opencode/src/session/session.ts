@@ -15,7 +15,7 @@ import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/loca
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
 
 import { NotFoundError } from "@/storage/storage"
-import { eq } from "drizzle-orm"
+import { eq, ilike } from "drizzle-orm"
 import { and } from "drizzle-orm"
 import { gte } from "drizzle-orm"
 import { isNull } from "drizzle-orm"
@@ -558,7 +558,7 @@ const layer: Layer.Layer<
       if (input?.roots) conditions.push(isNull(SessionTable.parent_id))
       if (input?.start) conditions.push(gte(SessionTable.time_updated, input.start))
       if (input?.cursor) conditions.push(lt(SessionTable.time_updated, input.cursor))
-      if (input?.search) conditions.push(like(SessionTable.title, `%${input.search}%`))
+      if (input?.search) conditions.push(ilike(SessionTable.title, `%${input.search.replaceAll("\u0000", "")}%`))
       if (!input?.archived) conditions.push(isNull(SessionTable.time_archived))
 
       const query =
@@ -731,20 +731,25 @@ const layer: Layer.Layer<
       return session
     })
 
+    // The read and the publish share one transaction: the projector writes the
+    // whole row, so two patches to different fields would otherwise overwrite
+    // each other.
     const patch = (sessionID: SessionID, info: Patch) =>
-      Effect.gen(function* () {
-        const current = yield* get(sessionID)
-        const next = {
-          ...current,
-          ...info,
-          time: info.time ? { ...current.time, ...info.time } : current.time,
-          share: info.share === null ? undefined : info.share ? { ...current.share, ...info.share } : current.share,
-          summary: info.summary === null ? undefined : (info.summary ?? current.summary),
-          revert: info.revert === null ? undefined : (info.revert ?? current.revert),
-          permission: info.permission === null ? undefined : (info.permission ?? current.permission),
-        } as Info
-        yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next })
-      })
+      db.transaction(() =>
+        Effect.gen(function* () {
+          const current = yield* get(sessionID)
+          const next = {
+            ...current,
+            ...info,
+            time: info.time ? { ...current.time, ...info.time } : current.time,
+            share: info.share === null ? undefined : info.share ? { ...current.share, ...info.share } : current.share,
+            summary: info.summary === null ? undefined : (info.summary ?? current.summary),
+            revert: info.revert === null ? undefined : (info.revert ?? current.revert),
+            permission: info.permission === null ? undefined : (info.permission ?? current.permission),
+          } as Info
+          yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next })
+        }),
+      )
 
     const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
       yield* patch(sessionID, { time: { updated: Date.now() } }).pipe(Effect.orDie)
@@ -989,7 +994,7 @@ function listByProject(
     conditions.push(gte(SessionTable.time_updated, input.start))
   }
   if (input.search) {
-    conditions.push(like(SessionTable.title, `%${input.search}%`))
+    conditions.push(ilike(SessionTable.title, `%${input.search.replaceAll("\u0000", "")}%`))
   }
 
   const limit = input.limit ?? 100

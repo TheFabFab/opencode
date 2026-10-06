@@ -57,6 +57,27 @@ describe("concurrent writers", () => {
     ),
   )
 
+  it.instance("concurrent updates to different fields of one session both survive", () =>
+    withSession(({ session, sessionID }) =>
+      Effect.gen(function* () {
+        // The title generator and the summariser both run after a turn, in
+        // parallel, and each writes the whole session row.
+        for (let round = 0; round < 10; round++) {
+          yield* Effect.all(
+            [
+              session.setTitle({ sessionID, title: `title ${round}` }),
+              session.setSummary({ sessionID, summary: { additions: round, deletions: 0, files: 0 } }),
+            ],
+            { concurrency: "unbounded" },
+          )
+          const info = yield* session.get(sessionID)
+          expect(info.title).toBe(`title ${round}`)
+          expect(info.summary).toMatchObject({ additions: round })
+        }
+      }),
+    ),
+  )
+
   cliIt.concurrent(
     "two processes on one scope",
     ({ llm, opencode }) =>

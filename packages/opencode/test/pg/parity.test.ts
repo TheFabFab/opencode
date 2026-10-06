@@ -60,6 +60,19 @@ describe("values SQLite tolerated", () => {
     ),
   )
 
+  it.instance("title search ignores letter case, as it did on SQLite", () =>
+    withSession(({ session, sessionID }) =>
+      Effect.gen(function* () {
+        yield* session.setTitle({ sessionID, title: "Thesis Draft: Chapter Two" })
+        const found = yield* session.list({ search: "thesis draft" })
+        expect(found.map((item) => item.id)).toContain(sessionID)
+        // Postgres refuses NUL in a text parameter; the search drops it instead of failing.
+        const nul = yield* session.list({ search: "draft\u0000" })
+        expect(nul.map((item) => item.id)).toContain(sessionID)
+      }),
+    ),
+  )
+
   it.instance("NUL in a text column", () =>
     withSession(({ session, sessionID }) =>
       Effect.gen(function* () {

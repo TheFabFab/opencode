@@ -66,13 +66,19 @@ describe("terminal methods", () => {
       }),
     ))
 
-  test("immediate transactions on one schema never overlap", () =>
-    withSchema((db) =>
-      Effect.gen(function* () {
-        yield* db.run(create)
-        yield* db.insert(Item).values({ id: "n", title: "counter", count: 0 }).run()
-        const bump = db.transaction(
-          (tx) =>
+  // SQLite ran every transaction behind one connection, so two never overlapped.
+  // Upstream's read-then-write code relies on that, whether or not it asked for
+  // an "immediate" transaction.
+  for (const [name, config] of [
+    ["a plain transaction", undefined],
+    ["an immediate transaction", { behavior: "immediate" as const }],
+  ] as const)
+    test(`${name} on one schema never overlaps another`, () =>
+      withSchema((db) =>
+        Effect.gen(function* () {
+          yield* db.run(create)
+          yield* db.insert(Item).values({ id: "n", title: "counter", count: 0 }).run()
+          const body = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) =>
             Effect.gen(function* () {
               const row = yield* tx.select().from(Item).where(eq(Item.id, "n")).get()
               yield* Effect.sleep("20 millis")
@@ -81,11 +87,10 @@ describe("terminal methods", () => {
                 .set({ count: row!.count + 1 })
                 .where(eq(Item.id, "n"))
                 .run()
-            }),
-          { behavior: "immediate" },
-        )
-        yield* Effect.all([bump, bump, bump, bump], { concurrency: "unbounded" })
-        expect((yield* db.select().from(Item).where(eq(Item.id, "n")).get())!.count).toBe(4)
-      }),
-    ))
+            })
+          const bump = config ? db.transaction(body, config) : db.transaction(body)
+          yield* Effect.all([bump, bump, bump, bump], { concurrency: "unbounded" })
+          expect((yield* db.select().from(Item).where(eq(Item.id, "n")).get())!.count).toBe(4)
+        }),
+      ))
 })
