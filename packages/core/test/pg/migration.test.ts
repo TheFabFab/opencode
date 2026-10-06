@@ -145,6 +145,16 @@ describe("migration lifecycle", () => {
       }),
     ))
 
+  test("migrate skips a named schema that no longer exists, and creates nothing", () =>
+    inSchema((db) =>
+      Effect.gen(function* () {
+        const gone = fresh()
+        yield* DatabaseMigration.migrate(db, { schema: gone })
+        expect(yield* db.all(sql`select 1 from information_schema.schemata where schema_name = ${gone}`)).toEqual([])
+        expect(yield* db.all(sql`select 1 from information_schema.tables where table_schema = ${gone}`)).toEqual([])
+      }),
+    ))
+
   test("migrate refuses a schema that has tables but no session table", () =>
     inSchema((db) =>
       Effect.gen(function* () {

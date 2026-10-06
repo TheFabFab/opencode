@@ -58,14 +58,21 @@ function tables(db: Database.Client | Database.Transaction) {
  * Brings one schema to what `input` expects: the connection's current schema,
  * or `options.schema`. It holds one advisory lock per schema for its whole
  * transaction, so concurrent callers queue and the later ones find the work
- * done.
+ * done. A named schema that does not exist is skipped.
  */
 export function migrate(db: Database.Client, options: { schema?: string; registry?: Registry } = {}) {
   const input = options.registry ?? registry
   const expected = [...input.ids].sort()
   return db.transaction((tx) =>
     Effect.gen(function* () {
-      if (options.schema) yield* tx.run(sql`SELECT set_config('search_path', ${options.schema}, true)`)
+      if (options.schema) {
+        // A scope can be removed while a Job that lists every schema is running.
+        const present = yield* tx.get(
+          sql`SELECT 1 AS found FROM information_schema.schemata WHERE schema_name = ${options.schema}`,
+        )
+        if (!present) return
+        yield* tx.run(sql`SELECT set_config('search_path', ${options.schema}, true)`)
+      }
       yield* tx.run(sql`SELECT pg_advisory_xact_lock(${LOCK_CLASS}, hashtext(current_schema()))`)
       const existing = (yield* tables(tx)).map((table) => table.name)
       if (existing.length > 0 && !existing.includes("session"))
