@@ -68,10 +68,12 @@ One upstream behaviour to keep in mind when probing a server: a request that arr
 ### Task 1: Work branch and CI with Postgres
 
 **Files:**
+
 - Modify: `.github/workflows/documentor-ci.yml`
 - Carry over from `documentor`: `.github/workflows/documentor-ci.yml`, `.github/workflows/documentor-release.yml`, `documentor/`
 
 **Interfaces:**
+
 - Produces: branch `documentor-pg`; in CI, `OPENCODE_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres` on a Postgres 18 with `C.UTF-8` collation.
 
 - [ ] **Step 1: Create the branch**
@@ -89,38 +91,38 @@ bun install || bun install
 In `.github/workflows/documentor-ci.yml`, replace both `- documentor` branch entries with:
 
 ```yaml
-      - documentor
-      - documentor-pg
+- documentor
+- documentor-pg
 ```
 
 and give the `unit` job a service and the variable, directly under `runs-on: ubuntu-24.04`:
 
 ```yaml
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_INITDB_ARGS: --locale=C.UTF-8
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+services:
+  postgres:
+    image: postgres:18
     env:
-      OPENCODE_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: --locale=C.UTF-8
+    ports:
+      - 5432:5432
+    options: >-
+      --health-cmd "pg_isready -U postgres"
+      --health-interval 5s
+      --health-timeout 5s
+      --health-retries 10
+env:
+  OPENCODE_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
 ```
 
 Add a step before "Run unit tests" that fails fast when the collation is wrong:
 
 ```yaml
-      - name: Check the database collation
-        run: |
-          collation="$(PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -Atc "select datcollate from pg_database where datname = current_database()")"
-          echo "collation: $collation"
-          [ "$collation" = "C.UTF-8" ]
+- name: Check the database collation
+  run: |
+    collation="$(PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -Atc "select datcollate from pg_database where datname = current_database()")"
+    echo "collation: $collation"
+    [ "$collation" = "C.UTF-8" ]
 ```
 
 - [ ] **Step 3: Commit, push and watch**
@@ -141,6 +143,7 @@ Expected: `typecheck` and `unit` green on unmodified source. One known flake: `e
 ### Task 2: `effect-drizzle-pg` — terminal methods, single-writer transactions, column types
 
 **Files:**
+
 - Create: `packages/effect-drizzle-pg/package.json`
 - Create: `packages/effect-drizzle-pg/tsconfig.json`
 - Create: `packages/effect-drizzle-pg/src/index.ts`
@@ -153,6 +156,7 @@ Expected: `typecheck` and `unit` green on unmodified source. One known flake: `e
 - Test: `packages/effect-drizzle-pg/test/columns.test.ts`
 
 **Interfaces:**
+
 - Produces, by importing `@opencode-ai/effect-drizzle-pg` once:
   - on every Drizzle Effect Postgres select, insert, update and delete builder: `.get()` (first row or `undefined`), `.all()` (all rows), `.run()` (void);
   - on the database and on a transaction: `.run(query)`, `.all<T>(query)`, `.get<T>(query)` for raw SQL;
@@ -441,7 +445,9 @@ describe("text column", () => {
     withSchema((db) =>
       Effect.gen(function* () {
         yield* db.run(create)
-        const exit = yield* db.run(sql`insert into "row" (id, title, total) values ('a', ${"a\u0000b"}, 1)`).pipe(Effect.exit)
+        const exit = yield* db
+          .run(sql`insert into "row" (id, title, total) values ('a', ${"a\u0000b"}, 1)`)
+          .pipe(Effect.exit)
         expect(exit._tag).toBe("Failure")
       }),
     ))
@@ -500,9 +506,9 @@ describe("count column", () => {
       Effect.gen(function* () {
         yield* db.run(create)
         for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-          const exit = yield* Effect.suspend(() => db.insert(Row).values({ id: "bad", title: "t", total: bad }).run()).pipe(
-            Effect.exit,
-          )
+          const exit = yield* Effect.suspend(() =>
+            db.insert(Row).values({ id: "bad", title: "t", total: bad }).run(),
+          ).pipe(Effect.exit)
           expect(exit._tag).toBe("Failure")
         }
         expect(yield* db.select().from(Row).all()).toEqual([])
@@ -734,9 +740,8 @@ database.transaction = function (
 ) {
   if (config?.behavior !== "immediate" && config?.behavior !== "exclusive") return transaction.call(this, fn)
   return transaction.call(this, (tx: any) =>
-    Effect.flatMap(
-      tx.execute(sql`select pg_advisory_xact_lock(${LOCK_CLASS}, hashtext(current_schema()))`),
-      () => fn(tx),
+    Effect.flatMap(tx.execute(sql`select pg_advisory_xact_lock(${LOCK_CLASS}, hashtext(current_schema()))`), () =>
+      fn(tx),
     ),
   )
 }
@@ -772,6 +777,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 After this task the monorepo type-checks, a server boots against Postgres, and tests get a throwaway schema per database layer. Start-up still applies the baseline; Task 4 moves that out.
 
 **Files (the complete list of upstream source files this plan changes):**
+
 - Modify by script: `packages/core/src/account/sql.ts`, `control-plane/workspace.sql.ts`, `credential/sql.ts`, `data-migration.sql.ts`, `event/sql.ts`, `permission/sql.ts`, `project/sql.ts`, `session/sql.ts`, `share/sql.ts`, `database/schema.sql.ts`, `database/path.ts` (all under `packages/core/src/`)
 - Modify: `packages/core/drizzle.config.ts`
 - Modify: `packages/core/package.json` (dependencies)
@@ -784,6 +790,7 @@ After this task the monorepo type-checks, a server boots against Postgres, and t
 - Test: `packages/core/test/pg/boot.test.ts`
 
 **Interfaces:**
+
 - Consumes: `@opencode-ai/effect-drizzle-pg` (Task 2).
 - Produces: `Database.Service` with `db` typed as Drizzle's `EffectPgDatabase`; `Database.Client` and `Database.Transaction` types; `Database.node`; `Database.layerFromPath(name)` kept for upstream tests, where the argument is ignored; `DatabaseMigration.apply(db)` which creates the baseline in an empty schema.
 - Produces for tests: with `OPENCODE_DATABASE_EPHEMERAL=1`, every build of the database layer creates a schema named `t_<32 hex>`, applies the baseline, and drops the schema when the layer closes.
@@ -958,9 +965,11 @@ type Transaction = DatabaseService.Transaction
 Replace the table listing in `apply` with:
 
 ```ts
-      const tables = yield* db.all<{ name: string }>(
-        sql`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema()`,
-      )
+const tables =
+  yield *
+  db.all<{ name: string }>(
+    sql`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema()`,
+  )
 ```
 
 Replace both `(id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)` with `(id TEXT PRIMARY KEY, time_completed DOUBLE PRECISION NOT NULL)`.
@@ -1106,6 +1115,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 4: Migration lifecycle — verify at start, migrate by command
 
 **Files:**
+
 - Rewrite: `packages/core/src/database/migration.ts`
 - Modify: `packages/core/src/database/database.ts` (the `layer` body)
 - Create: `packages/core/src/database/collation.ts`
@@ -1116,6 +1126,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `packages/core/test/pg/migration.test.ts`
 
 **Interfaces:**
+
 - Consumes: `Database.Client`, `Database.Transaction` (Task 3); `withSchema`-style admin access through `OPENCODE_TEST_DATABASE_URL`.
 - Produces:
   - `DatabaseMigration.BASELINE: string` — the id of the newest upstream migration the generated baseline already contains.
@@ -1304,9 +1315,7 @@ describe("migration lifecycle", () => {
           expect(visited).not.toContain(empty)
           for (const name of [first, second])
             expect(yield* db.all(sql.raw(`select id from "${name}".marker`))).toEqual([])
-          expect(
-            yield* db.all(sql`select 1 from information_schema.tables where table_schema = ${empty}`),
-          ).toEqual([])
+          expect(yield* db.all(sql`select 1 from information_schema.tables where table_schema = ${empty}`)).toEqual([])
           expect(yield* db.get<{ name: string }>(sql`select current_schema() as name`)).toEqual({ name: first })
         }).pipe(
           Effect.ensuring(
@@ -1513,15 +1522,15 @@ export function verify(db: Database.Client, input: Registry = registry) {
 In `packages/core/src/database/database.ts`, add the import `import { DatabaseCollation } from "./collation"` and replace the body of the inner `Effect.gen` with:
 
 ```ts
-        const db = yield* makeDatabase
-        if (ephemeral) {
-          yield* db.run(`CREATE SCHEMA "${schema}"`)
-          yield* Effect.addFinalizer(() => db.run(`DROP SCHEMA "${schema}" CASCADE`).pipe(Effect.ignore))
-          yield* DatabaseMigration.migrate(db)
-        }
-        yield* DatabaseCollation.verify(db)
-        yield* DatabaseMigration.verify(db)
-        return { db }
+const db = yield * makeDatabase
+if (ephemeral) {
+  yield * db.run(`CREATE SCHEMA "${schema}"`)
+  yield * Effect.addFinalizer(() => db.run(`DROP SCHEMA "${schema}" CASCADE`).pipe(Effect.ignore))
+  yield * DatabaseMigration.migrate(db)
+}
+yield * DatabaseCollation.verify(db)
+yield * DatabaseMigration.verify(db)
+return { db }
 ```
 
 - [ ] **Step 5: Add a connection for commands, and the migrate command**
@@ -1637,11 +1646,7 @@ const MigrateCommand = cmd({
 export const DbCommand = cmd({
   command: "db",
   describe: "database tools",
-  builder: (yargs: Argv) =>
-    yargs
-      .command(QueryCommand)
-      .command(MigrateCommand)
-      .demandCommand(),
+  builder: (yargs: Argv) => yargs.command(QueryCommand).command(MigrateCommand).demandCommand(),
   handler() {},
 })
 ```
@@ -1663,8 +1668,8 @@ Each entry is an upstream test file or case that is absent or changed on
 `documentor-pg`, with the reason. A rebase that brings one back must either
 make it pass on Postgres or keep it listed here.
 
-| Upstream test | State | Reason | Replaced by |
-| --- | --- | --- | --- |
+| Upstream test                                   | State   | Reason                                                                         | Replaced by                               |
+| ----------------------------------------------- | ------- | ------------------------------------------------------------------------------ | ----------------------------------------- |
 | `packages/core/test/database-migration.test.ts` | Deleted | Tests SQLite's file journal and the import of Drizzle's SQLite migration table | `packages/core/test/pg/migration.test.ts` |
 ```
 
@@ -1700,6 +1705,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 5: Connection settings — required URL, verified TLS, pool size, recovery
 
 **Files:**
+
 - Create: `packages/core/src/database/target.ts`
 - Modify: `packages/core/src/database/database.ts` (use `DatabaseTarget.read`)
 - Modify: `packages/core/src/database/connect.ts` (use `DatabaseTarget.read`)
@@ -1708,6 +1714,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `packages/core/test/pg/recovery.test.ts`
 
 **Interfaces:**
+
 - Produces: `DatabaseTarget.read(env): { url: string; schema: string | undefined; ephemeral: boolean; maxConnections: number }`, which throws `DatabaseTarget.InvalidTargetError` with a message naming the setting at fault.
 
 - [ ] **Step 1: Write the failing settings tests**
@@ -1738,9 +1745,9 @@ describe("database target", () => {
   })
 
   test("accepts a remote host with sslmode=verify-full", () => {
-    expect(
-      read({ OPENCODE_DATABASE_URL: "postgresql://u@db.internal:5432/db?sslmode=verify-full" }).url,
-    ).toContain("sslmode=verify-full")
+    expect(read({ OPENCODE_DATABASE_URL: "postgresql://u@db.internal:5432/db?sslmode=verify-full" }).url).toContain(
+      "sslmode=verify-full",
+    )
   })
 
   test("sends the schema as the search path", () => {
@@ -1852,9 +1859,9 @@ In `packages/core/src/database/database.ts` delete the local `target()` function
 In `packages/core/src/database/connect.ts` delete the local `Target` interface and `read` function, import `DatabaseTarget` from `./target`, type `body`'s second parameter as `DatabaseTarget.Target`, and replace `const target = read(options.schema)` with:
 
 ```ts
-    const target = DatabaseTarget.read(
-      options.schema ? process.env : { ...process.env, OPENCODE_DATABASE_SCHEMA: undefined },
-    )
+const target = DatabaseTarget.read(
+  options.schema ? process.env : { ...process.env, OPENCODE_DATABASE_SCHEMA: undefined },
+)
 ```
 
 Commands then refuse a remote host without verified TLS, as a server does.
@@ -1925,11 +1932,13 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 6: Scope provisioning and isolation
 
 **Files:**
+
 - Create: `packages/core/src/database/provision.ts`
 - Modify: `packages/opencode/src/cli/cmd/db.ts` (two commands)
 - Test: `packages/core/test/pg/isolation.test.ts`
 
 **Interfaces:**
+
 - Consumes: `Database.Client`, `DatabaseMigration.migrate`, `DatabaseConnect.run`.
 - Produces, all taking an administrator's `Database.Client`:
   - `DatabaseProvision.scope(db, { schema, role, password? })` — creates the role if absent (with login; `password` required then), creates the schema, and grants the role read and write on its tables, present and future. Does not migrate.
@@ -2004,7 +2013,8 @@ afterAll(async () => {
 })
 
 const read = (schema: string) => sql.raw(`select name from "${schema}".data_migration`)
-const write = (schema: string) => sql.raw(`insert into "${schema}".data_migration (name, time_completed) values ('x', 1)`)
+const write = (schema: string) =>
+  sql.raw(`insert into "${schema}".data_migration (name, time_completed) values ('x', 1)`)
 
 describe("scope isolation", () => {
   test("a scope role reads and writes its own schema", () =>
@@ -2209,21 +2219,23 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 7: Upstream's unit suite on Postgres
 
 **Files:**
+
 - Modify: `documentor/upstream-test-exceptions.md`
 - Modify (expected, test-only): `packages/core/test/session-runner.test.ts`
 - Modify: `.github/workflows/documentor-ci.yml` (timeouts only if needed)
 
 **Interfaces:**
+
 - Consumes: everything above.
 - Produces: `bun turbo test` green on `documentor-pg`, locally and in CI, with every deviation from upstream's tests listed in `documentor/upstream-test-exceptions.md`.
 
 With Tasks 2 to 6 in place the probe measured the core suite at 1,105 pass and 11 fail on Postgres:
 
-| Group | Count | Expected cause |
-| --- | --- | --- |
-| `SessionRunnerLLM` | 8 | Five assert what a forked fiber has done the moment `session.prompt` returns. On SQLite every query is synchronous, so the fork had always run; on Postgres each query yields. Three (`durably closes partial …`) time out at 30 s |
-| `Integration > completes auto OAuth in the background` | 1 | Not yet examined |
-| `util.flock`, `util.effect-flock` "unwritable lock roots" | 2 | The probe ran as root, for whom no directory is unwritable. They pass as a normal user, as in CI |
+| Group                                                     | Count | Expected cause                                                                                                                                                                                                                     |
+| --------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SessionRunnerLLM`                                        | 8     | Five assert what a forked fiber has done the moment `session.prompt` returns. On SQLite every query is synchronous, so the fork had always run; on Postgres each query yields. Three (`durably closes partial …`) time out at 30 s |
+| `Integration > completes auto OAuth in the background`    | 1     | Not yet examined                                                                                                                                                                                                                   |
+| `util.flock`, `util.effect-flock` "unwritable lock roots" | 2     | The probe ran as root, for whom no directory is unwritable. They pass as a normal user, as in CI                                                                                                                                   |
 
 The opencode package's suite had not finished on the probe when this plan was written; expect its own list.
 
@@ -2248,7 +2260,11 @@ const eventually = <A>(read: () => A, done: (value: A) => boolean) =>
     Effect.orDie,
   )
 
-yield* eventually(() => requests.length, (count) => count === 1)
+yield *
+  eventually(
+    () => requests.length,
+    (count) => count === 1,
+  )
 expect(requests).toHaveLength(1)
 ```
 
@@ -2285,10 +2301,12 @@ Expected: green. If the unit step runs past its 30-minute limit, raise `timeout-
 ### Task 8: Parity tests for what SQLite tolerated
 
 **Files:**
+
 - Test: `packages/opencode/test/pg/parity.test.ts`
 - Test: `packages/opencode/test/pg/concurrency.test.ts`
 
 **Interfaces:**
+
 - Consumes: `Database.Service`, the session and message services, `packages/opencode/test/lib/cli-process.ts` (upstream's subprocess harness with a scripted model).
 - Produces: tests that pin, through the session service, what Task 2's column types and Task 4's collation check guarantee.
 
@@ -2415,7 +2433,11 @@ it.instance("cost keeps full double precision", () =>
   withSession(({ sessionID }) =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
-      yield* db.update(SessionTable).set({ cost: 0.1 + 0.2 }).where(eq(SessionTable.id, sessionID)).run()
+      yield* db
+        .update(SessionTable)
+        .set({ cost: 0.1 + 0.2 })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
       expect((yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())!.cost).toBe(0.1 + 0.2)
     }),
   ),
@@ -2522,11 +2544,13 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 9: The compiled binary on Postgres, and its release
 
 **Files:**
+
 - Use: `documentor/scripts/binary-smoke.sh`
 - Modify: `.github/workflows/documentor-ci.yml` (new `binary` job)
 - Modify: `.github/workflows/documentor-release.yml` (tag pattern)
 
 **Interfaces:**
+
 - Consumes: the build (`packages/opencode/script/build.ts --single`), `opencode db migrate`, `opencode db provision`.
 - Produces: `documentor/scripts/binary-smoke.sh <binary>` exiting 0 only when the binary serves from Postgres as a scope role; releases tagged `v<upstream>-documentor-pg.<n>` published as `ghcr.io/thefabfab/opencode:<upstream>-documentor-pg.<n>`.
 
@@ -2612,21 +2636,21 @@ Expected: `binary smoke passed for smoke_…`.
 In `.github/workflows/documentor-ci.yml` add a `binary` job with the same `services` and `env` blocks as `unit`:
 
 ```yaml
-  binary:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+binary:
+  runs-on: ubuntu-24.04
+  steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: ./.github/actions/setup-bun
+    - uses: ./.github/actions/setup-bun
 
-      - name: Build
-        working-directory: packages/opencode
-        run: bun run script/build.ts --single
-        env:
-          OPENCODE_VERSION: "1.18.34"
+    - name: Build
+      working-directory: packages/opencode
+      run: bun run script/build.ts --single
+      env:
+        OPENCODE_VERSION: "1.18.34"
 
-      - name: Serve from Postgres as a scope role
-        run: documentor/scripts/binary-smoke.sh packages/opencode/dist/opencode-linux-x64/bin/opencode
+    - name: Serve from Postgres as a scope role
+      run: documentor/scripts/binary-smoke.sh packages/opencode/dist/opencode-linux-x64/bin/opencode
 ```
 
 - [ ] **Step 4: Let the release workflow accept the new line's tags**
@@ -2634,9 +2658,9 @@ In `.github/workflows/documentor-ci.yml` add a `binary` job with the same `servi
 In `.github/workflows/documentor-release.yml` change the tag filter to:
 
 ```yaml
-    tags:
-      - "v*-documentor.*"
-      - "v*-documentor-pg.*"
+tags:
+  - "v*-documentor.*"
+  - "v*-documentor-pg.*"
 ```
 
 and the version check's pattern to `^v([0-9]+\.[0-9]+\.[0-9]+)-documentor(-pg)?\.([0-9]+)$`.
@@ -2659,10 +2683,12 @@ Expected: `typecheck`, `unit` and `binary` green.
 ### Task 10: The fork record
 
 **Files:**
+
 - Create: `documentor/FORK.md`
 - Modify: `documentor/specs/2026-10-06-postgres-core-design.md` (only if the implementation departed from it)
 
 **Interfaces:**
+
 - Produces: the document a rebase onto a newer upstream tag starts from.
 
 - [ ] **Step 1: Write `documentor/FORK.md`**

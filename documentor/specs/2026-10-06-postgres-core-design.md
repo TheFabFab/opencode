@@ -62,14 +62,14 @@ same change is a merge conflict in a file we own, which is the signal we want.
 
 ### 2. Column types
 
-| SQLite today | Postgres | Reason |
-| --- | --- | --- |
-| `integer` holding a millisecond timestamp | `double precision` | SQLite stores a fractional value in an integer column unchanged, and upstream relies on it: its pagination tests write `1000.5` as a message time. `double precision` holds every JS number exactly as SQLite did |
-| `integer` holding a count, a sequence number or an id | `bigint`, read as a JS number | A 32-bit `integer` is too small. A fraction is rounded and a non-finite number is refused, where SQLite stored either as given |
-| `text` in JSON mode (14 columns) | `jsonb` | The web tier reads these directly |
-| `integer` in boolean mode (2 columns) | `boolean` | |
-| `real` (session cost) | `double precision` | Postgres `real` is 4 bytes and would lose precision |
-| `text`, and the path column types | `text`, same custom types | |
+| SQLite today                                          | Postgres                      | Reason                                                                                                                                                                                                            |
+| ----------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `integer` holding a millisecond timestamp             | `double precision`            | SQLite stores a fractional value in an integer column unchanged, and upstream relies on it: its pagination tests write `1000.5` as a message time. `double precision` holds every JS number exactly as SQLite did |
+| `integer` holding a count, a sequence number or an id | `bigint`, read as a JS number | A 32-bit `integer` is too small. A fraction is rounded and a non-finite number is refused, where SQLite stored either as given                                                                                    |
+| `text` in JSON mode (14 columns)                      | `jsonb`                       | The web tier reads these directly                                                                                                                                                                                 |
+| `integer` in boolean mode (2 columns)                 | `boolean`                     |                                                                                                                                                                                                                   |
+| `real` (session cost)                                 | `double precision`            | Postgres `real` is 4 bytes and would lose precision                                                                                                                                                               |
+| `text`, and the path column types                     | `text`, same custom types     |                                                                                                                                                                                                                   |
 
 Postgres rejects the NUL character in `text`, and its escaped form (`\u0000`)
 inside `jsonb` strings. Tool output can contain it. The text and JSON column
@@ -96,11 +96,34 @@ transaction objects. It is typed, it does not rewrite rows, and it mirrors what
 unchanged against Postgres types, and the type checker reports every place
 where SQLite and Postgres really differ.
 
-Two call sites open a transaction with SQLite's `behavior: "immediate"`, which
-means "one writer at a time". The extension keeps that meaning: an immediate
-transaction first takes a transaction-scoped advisory lock. Within a scope
-this serialises writers exactly as SQLite did, including two processes that
-are wrongly running for the same scope.
+SQLite ran every transaction through one connection, so two never
+overlapped, and upstream's read-then-write code relies on that. The
+extension keeps that meaning for every transaction: each first takes a
+transaction-scoped advisory lock keyed on the schema. Within a scope this
+serialises writers exactly as SQLite did, including two processes that are
+wrongly running for the same scope. The two call sites that pass
+`behavior: "immediate"` get the same lock as the rest.
+
+### Concurrency the swap exposes
+
+SQLite runs every query synchronously, so nothing else in the process can run
+between a read and the write that follows it. On Postgres every query yields.
+Three things in opencode depended on the old behaviour, and all are handled:
+
+- **A tool part has two writers**, the processor and the running tool, and each
+  reads the part and writes it back. A lock per processor holds each read and
+  write together.
+- **An OAuth attempt was marked complete before its credential was stored.**
+  The credential is now stored first, inside the same update.
+- **Effect `4.0.0-beta.83` corrupts a fiber's state** when the fiber wakes
+  another fiber that interrupts it synchronously and its cleanup then awaits
+  anything. With a database connection in play that leaks the connection. The
+  fork carries Effect's own fix, released in `4.0.0-beta.100`, as a dependency
+  patch.
+
+Upstream tests that read state the instant a call returns, before a background
+fiber has completed a database round trip, wait for that state instead. Each is
+listed in `documentor/upstream-test-exceptions.md`.
 
 ### 4. Isolation: one schema and one role per user scope
 
@@ -113,11 +136,11 @@ process per scope, each with its own data directory and its own SQLite file,
 and sandboxes a project's process to that project's files. The Postgres layout
 keeps that unit:
 
-| Role | Its own schema | Other schemas |
-| --- | --- | --- |
-| A user's project scope | Read and write | None |
+| Role                    | Its own schema | Other schemas                                      |
+| ----------------------- | -------------- | -------------------------------------------------- |
+| A user's project scope  | Read and write | None                                               |
 | A user's `global` scope | Read and write | Read-only on every project schema of the same user |
-| Web tier | — | Read-only on all schemas |
+| Web tier                | —              | Read-only on all schemas                           |
 
 A project chat therefore cannot reach outside its project, and a global chat
 can read all of that user's chats. Nothing crosses from one user to another.
@@ -161,8 +184,11 @@ possible later: it is a data move plus the key changes above.
 - A test fails when upstream's migration list contains an id the fork has
   neither ported nor declared a no-op. That is how a rebase tells us upstream
   changed the schema.
-- Starting a server never changes a schema. It checks that the schema's applied
-  migrations match what the binary expects and refuses to start otherwise.
+- Starting a server never changes a schema. It checks that the schema holds
+  every migration the binary expects and refuses to start otherwise. A schema
+  that also holds migrations the binary does not know, because a newer build
+  migrated it, is accepted: during a rolling deploy the older pods keep
+  starting.
 - Separate commands do the schema work: `opencode db migrate` for one schema or,
   with `--all`, every schema, under an advisory lock so two Jobs cannot run at
   once; `opencode db provision` to create a scope's schema and role; and
@@ -172,28 +198,28 @@ possible later: it is a data move plus the key changes above.
 
 ### 6. Configuration
 
-| Setting | Meaning |
-| --- | --- |
-| `OPENCODE_DATABASE_URL` | Required. The server refuses to start without it, and refuses a non-local host unless the URL asks for verified TLS (`sslmode=verify-full`) |
-| `OPENCODE_DATABASE_SCHEMA` | The scope's schema; sent as `search_path` on every connection |
-| `OPENCODE_DATABASE_POOL_MAX` | Connections per process, default 4 |
+| Setting                      | Meaning                                                                                                                                     |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENCODE_DATABASE_URL`      | Required. The server refuses to start without it, and refuses a non-local host unless the URL asks for verified TLS (`sslmode=verify-full`) |
+| `OPENCODE_DATABASE_SCHEMA`   | The scope's schema; sent as `search_path` on every connection                                                                               |
+| `OPENCODE_DATABASE_POOL_MAX` | Connections per process, default 4                                                                                                          |
 
 `OPENCODE_DB`, the SQLite file path logic and the `opencode db` command, which
 opens the `sqlite3` shell, are removed.
 
 ## Testing
 
-| Gate | What it proves |
-| --- | --- |
-| Type check of every package | Call sites are compatible with Postgres types |
-| Upstream unit suite on Postgres in CI, one fresh schema per database layer | Behaviour matches upstream |
-| Column round-trip tests | All-digit strings stay strings; millisecond timestamps fit every time column; cost keeps full precision; NUL in JSON is accepted |
-| Collation test | A database with a locale collation is refused; mixed-case ids page in creation order |
-| Transport test | A non-local URL without verified TLS is refused |
-| Migration tests | Unknown upstream migration fails the build; server refuses an unmigrated schema; two migration Jobs racing apply once |
-| Isolation test | A project role cannot read or write another schema; a `global` role can read its own user's project schemas, cannot write them, and cannot read another user's |
-| Writer test | Two connections appending to one session produce gap-free, ordered sequence numbers |
-| Compiled-binary test | The built binary, connected as a scope role, serves sessions from Postgres and creates no SQLite file. Prompts on Postgres are covered by upstream's subprocess tests, which run from source |
+| Gate                                                                       | What it proves                                                                                                                                                                               |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Type check of every package                                                | Call sites are compatible with Postgres types                                                                                                                                                |
+| Upstream unit suite on Postgres in CI, one fresh schema per database layer | Behaviour matches upstream                                                                                                                                                                   |
+| Column round-trip tests                                                    | All-digit strings stay strings; millisecond timestamps fit every time column; cost keeps full precision; NUL in JSON is accepted                                                             |
+| Collation test                                                             | A database with a locale collation is refused; mixed-case ids page in creation order                                                                                                         |
+| Transport test                                                             | A non-local URL without verified TLS is refused                                                                                                                                              |
+| Migration tests                                                            | Unknown upstream migration fails the build; server refuses an unmigrated schema; two migration Jobs racing apply once                                                                        |
+| Isolation test                                                             | A project role cannot read or write another schema; a `global` role can read its own user's project schemas, cannot write them, and cannot read another user's                               |
+| Writer test                                                                | Two connections appending to one session produce gap-free, ordered sequence numbers                                                                                                          |
+| Compiled-binary test                                                       | The built binary, connected as a scope role, serves sessions from Postgres and creates no SQLite file. Prompts on Postgres are covered by upstream's subprocess tests, which run from source |
 
 CI adds a Postgres 18 service container, the current stable major and the one
 production will run. SQLite-specific upstream tests, such as

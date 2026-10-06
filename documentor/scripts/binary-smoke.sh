@@ -49,6 +49,29 @@ node -e '
   if (!found || found.title !== "12345") { console.error("session did not round-trip", listed); process.exit(1) }
 ' "$created" "$listed"
 
+# A prompt for a session that does not exist is refused, with its body unread.
+missing="ses_ffffffffffffmissing0000000000"
+refused="$(curl -sS -m 20 -o "$home/refused.json" -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$port/api/session/$missing/prompt" \
+  -H "x-opencode-directory: $home/proj" -H 'content-type: application/json' \
+  -d '{"prompt":{"text":"hello"}}')"
+[ "$refused" = 404 ] || { echo "prompt to a missing session returned $refused, expected 404" >&2; exit 1; }
+node -e '
+  const body = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
+  if (body._tag !== "SessionNotFoundError" || body.sessionID !== process.argv[2]) {
+    console.error("unexpected refusal body", body); process.exit(1)
+  }
+' "$home/refused.json" "$missing"
+
+# The same refusal with a 6 MB body the route never reads: the server must
+# answer, not wait for the body to be consumed.
+node -e 'process.stdout.write(JSON.stringify({ prompt: { text: "x".repeat(6 * 1024 * 1024) } }))' > "$home/big.json"
+big="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$port/api/session/$missing/prompt" \
+  -H "x-opencode-directory: $home/proj" -H 'content-type: application/json' \
+  --data-binary "@$home/big.json")"
+[ "$big" = 404 ] || { echo "prompt with a 6 MB body to a missing session returned $big, expected 404" >&2; exit 1; }
+
 stray="$(find "$home" -name '*.db' -o -name '*.db-wal' -o -name '*.sqlite')"
 [ -z "$stray" ] || { echo "SQLite file created: $stray" >&2; exit 1; }
 
