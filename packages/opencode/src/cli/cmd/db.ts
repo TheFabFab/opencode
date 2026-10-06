@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { DatabaseCollation } from "@opencode-ai/core/database/collation"
 import { DatabaseConnect } from "@opencode-ai/core/database/connect"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
+import { DatabaseProvision } from "@opencode-ai/core/database/provision"
 import { cmd } from "./cmd"
 
 // These commands run outside the application runtime. The runtime builds
@@ -56,9 +57,54 @@ const MigrateCommand = cmd({
   },
 })
 
+const names = (yargs: Argv) =>
+  yargs
+    .option("schema", { type: "string", demandOption: true, describe: "the scope's schema" })
+    .option("role", { type: "string", demandOption: true, describe: "the role to grant" })
+
+const ProvisionCommand = cmd({
+  command: "provision",
+  describe: "create a scope's schema and role; the role's password is read from OPENCODE_DATABASE_ROLE_PASSWORD",
+  builder: names,
+  async handler(args) {
+    await run(
+      DatabaseConnect.run(
+        (db) =>
+          DatabaseProvision.scope(db, {
+            schema: args.schema,
+            role: args.role,
+            password: process.env.OPENCODE_DATABASE_ROLE_PASSWORD,
+          }),
+        { schema: false },
+      ),
+    )
+    console.log(`scope ${args.schema} is provisioned for role ${args.role}`)
+  },
+})
+
+const GrantReadCommand = cmd({
+  command: "grant-read",
+  describe: "let a role read a scope's schema",
+  builder: names,
+  async handler(args) {
+    await run(
+      DatabaseConnect.run((db) => DatabaseProvision.reader(db, { schema: args.schema, role: args.role }), {
+        schema: false,
+      }),
+    )
+    console.log(`role ${args.role} can read ${args.schema}`)
+  },
+})
+
 export const DbCommand = cmd({
   command: "db",
   describe: "database tools",
-  builder: (yargs: Argv) => yargs.command(QueryCommand).command(MigrateCommand).demandCommand(),
+  builder: (yargs: Argv) =>
+    yargs
+      .command(QueryCommand)
+      .command(MigrateCommand)
+      .command(ProvisionCommand)
+      .command(GrantReadCommand)
+      .demandCommand(),
   handler() {},
 })
