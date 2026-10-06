@@ -1,0 +1,103 @@
+name: documentor-release
+run-name: "documentor release ${{ github.ref_name }}"
+
+# Builds the linux-x64 binary DocuMentor runs and publishes it as a
+# single-file image on ghcr.io. DocuMentor's Dockerfile consumes it with
+# `COPY --from=ghcr.io/<owner>/opencode@sha256:... /opencode ...`.
+#
+# A release is a tag `v<upstream version>-documentor.<n>` on the `documentor`
+# branch. The binary reports the upstream version alone: on start opencode
+# installs `@opencode-ai/plugin@<its own version>` from npm, and only upstream
+# versions exist there. The fork revision travels in the image tag and labels.
+
+on:
+  push:
+    tags:
+      - "v*-documentor.*"
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Read versions from the tag
+        id: version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-documentor\.([0-9]+)$ ]]; then
+            echo "tag '$tag' is not v<major>.<minor>.<patch>-documentor.<n>" >&2
+            exit 1
+          fi
+          upstream="${BASH_REMATCH[1]}"
+          declared="$(node -p "require('./packages/opencode/package.json').version")"
+          if [ "$declared" != "$upstream" ]; then
+            echo "tag says upstream $upstream but packages/opencode/package.json is $declared" >&2
+            exit 1
+          fi
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/opencode" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Build
+        working-directory: packages/opencode
+        run: bun run script/build.ts --single
+        env:
+          OPENCODE_VERSION: ${{ steps.version.outputs.upstream }}
+
+      - name: Check the binary
+        id: binary
+        run: |
+          set -euo pipefail
+          binary=packages/opencode/dist/opencode-linux-x64/bin/opencode
+          reported="$("$binary" --version)"
+          if [ "$reported" != "${{ steps.version.outputs.upstream }}" ]; then
+            echo "binary reports '$reported', expected '${{ steps.version.outputs.upstream }}'" >&2
+            exit 1
+          fi
+          echo "path=$binary" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$binary" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the image
+        id: image
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.version.outputs.image }}
+        run: |
+          set -euo pipefail
+          context="$(mktemp -d)"
+          cp "${{ steps.binary.outputs.path }}" "$context/opencode"
+          chmod 755 "$context/opencode"
+          printf 'FROM scratch\nCOPY opencode /opencode\n' > "$context/Dockerfile"
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build "$context" \
+            --tag "$IMAGE:${GITHUB_REF_NAME#v}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${GITHUB_REF_NAME#v}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --label "org.opencontainers.image.description=opencode linux-x64 binary for DocuMentor, at /opencode"
+          docker push "$IMAGE:${GITHUB_REF_NAME#v}"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:${GITHUB_REF_NAME#v}")"
+          echo "ref=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise
+        run: |
+          {
+            echo "### ${GITHUB_REF_NAME}"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Image | \`${{ steps.image.outputs.ref }}\` |"
+            echo "| Binary sha256 | \`${{ steps.binary.outputs.sha256 }}\` |"
+            echo "| Reports | \`${{ steps.version.outputs.upstream }}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
