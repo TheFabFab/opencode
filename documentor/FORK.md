@@ -16,7 +16,7 @@ files it changes, because those are what a rebase meets.
 | The 11 table files: `packages/core/src/{account,credential,event,permission,project,session,share}/sql.ts`, `control-plane/workspace.sql.ts`, `data-migration.sql.ts`, `database/schema.sql.ts`, `database/path.ts`                    | Postgres table builder; `count`, `jsonb` and `text` columns from `effect-drizzle-pg`; time columns are `double precision`                                | Written by `documentor/scripts/convert-schema.py`, never by hand                                                                                                                                                                                      |
 | `packages/core/src/database/schema.gen.ts`, `packages/core/schema.json`, `packages/core/drizzle.config.ts`                                                                                                                             | The Postgres baseline, as one statement batch                                                                                                            | Generated; see "Regenerating the baseline"                                                                                                                                                                                                            |
 | `packages/core/src/database/database.ts`                                                                                                                                                                                               | Connects with `@effect/sql-pg`; verifies collation and migrations and changes nothing; a throwaway schema per layer when `OPENCODE_DATABASE_EPHEMERAL=1` | The service itself                                                                                                                                                                                                                                    |
-| `packages/core/src/database/migration.ts`                                                                                                                                                                                              | `migrate`, `migrateAll`, `verify`, `pending`, `BASELINE`, `ported`                                                                                       | Schema work is a command, not a start-up side effect                                                                                                                                                                                                  |
+| `packages/core/src/database/migration.ts`                                                                                                                                                                                              | `migrate`, `migrateAll`, `verify`, `pending`, `BASELINE_IDS`, `ported`                                                                                   | Schema work is a command, not a start-up side effect                                                                                                                                                                                                  |
 | `packages/core/src/project/directories.ts`                                                                                                                                                                                             | `Transaction` is `Database.Transaction`                                                                                                                  | It was typed against the SQLite client                                                                                                                                                                                                                |
 | `packages/core/src/flag/flag.ts`                                                                                                                                                                                                       | No `OPENCODE_DB`                                                                                                                                         | Nothing reads it                                                                                                                                                                                                                                      |
 | `packages/core/package.json`                                                                                                                                                                                                           | Depends on `@effect/sql-pg`, `pg`, `@opencode-ai/effect-drizzle-pg`; tests run with `--timeout 30000`                                                    | Each test database is a real schema, about 110 ms to build                                                                                                                                                                                            |
@@ -68,12 +68,18 @@ OPENCODE_DATABASE_SCHEMA=<scope> opencode db migrate
 opencode db grant-read --schema <project scope> --role <global scope>
 ```
 
+Run all three as the same administrator role. `ALTER DEFAULT PRIVILEGES`
+binds to the role that executes it, so tables that a later `db migrate` adds
+are visible to the scope roles only when the same role provisioned them.
+
 A server then runs as the scope's role with `OPENCODE_DATABASE_SCHEMA=<scope>`.
 It never creates, alters or drops anything: if the schema is not migrated for
 the build, it refuses to start and names `opencode db migrate`. After a
 release that changes the schema, `opencode db migrate --all` brings every
-schema that holds opencode's tables up to date; it is safe to run twice and
-safe to run concurrently.
+schema that holds both a `session` and a `migration` table up to date, reports
+any schema that fails and exits non-zero if one did; it is safe to run twice
+and safe to run concurrently. `db migrate` without `--all` refuses to run when
+`OPENCODE_DATABASE_SCHEMA` is not set.
 
 ## Rebasing onto a newer upstream tag
 
@@ -84,8 +90,8 @@ safe to run concurrently.
    "every upstream migration is either in the baseline or ported" names an
    upstream migration added since the baseline. For schemas already in use,
    write its Postgres version into `DatabaseMigration.ported`, keyed by
-   upstream's migration id. Then regenerate the baseline and set
-   `DatabaseMigration.BASELINE` to upstream's newest migration id.
+   upstream's migration id. Then regenerate the baseline and add the id to
+   `DatabaseMigration.BASELINE_IDS`.
 3. Run `bun turbo typecheck`. A new error in upstream query code means it used
    something only the SQLite client has. Add it to `effect-drizzle-pg` if it is
    an API difference; change the call site only as a last resort, and add a row
@@ -139,6 +145,19 @@ pass as a normal user, which is how CI runs.
 
 A test process that is killed leaves its `t_…` schemas behind. They hold no
 data anyone needs and can be dropped.
+
+## Gaps to close before multi-tenant deployment
+
+- **Advisory locks are database-wide.** Every transaction and every migration
+  takes `pg_advisory_xact_lock` keyed on the schema name, and any role can
+  call those functions. A hostile process in one pod could hold another
+  scope's key and stall that scope's writes, or stall the migration Job. Data
+  isolation is unaffected. The replacement is a lock on a row in the scope's
+  own schema, which only its role can reach; it belongs with the pod
+  packaging design, which owns the "pod is not trusted" boundary.
+- **Scope roles can read other scopes' names.** `pg_namespace`, `pg_roles`
+  and `pg_stat_activity` show every schema and role name, though no row data.
+  Opaque schema names close this.
 
 ## Known upstream behaviour
 

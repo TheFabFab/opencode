@@ -97,9 +97,11 @@ declare module "drizzle-orm/pg-core/effect/db" {
       query: SQLWrapper | string,
     ): Effect.Effect<T | undefined, TEffectHKT["error"], TEffectHKT["context"]>
     /**
-     * `behavior: "immediate"` and `"exclusive"` mean one writer at a time, as
-     * they do in SQLite: the transaction waits for an advisory lock keyed on
-     * the current schema before it runs.
+     * Every transaction waits for an advisory lock keyed on the current
+     * schema before it runs, so two transactions on one schema never overlap.
+     * That is what SQLite gave upstream's code through its single connection,
+     * and what its read-then-write sequences rely on. `behavior` is accepted
+     * for the two call sites that pass it and changes nothing.
      */
     transaction<A, E, R>(
       transaction: (tx: PgEffectTransaction<TEffectHKT, TQueryResult, TRelations>) => Effect.Effect<A, E, R>,
@@ -138,9 +140,8 @@ database.get = function (query: SQLWrapper | string) {
 const transaction = database.transaction
 database.transaction = function (
   fn: (tx: any) => Effect.Effect<unknown, unknown, unknown>,
-  config?: { behavior?: string },
+  _config?: { behavior?: string },
 ) {
-  if (config?.behavior !== "immediate" && config?.behavior !== "exclusive") return transaction.call(this, fn)
   return transaction.call(this, (tx: any) =>
     Effect.flatMap(tx.execute(sql`select pg_advisory_xact_lock(${LOCK_CLASS}, hashtext(current_schema()))`), () =>
       fn(tx),

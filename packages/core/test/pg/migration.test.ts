@@ -40,12 +40,19 @@ const withPort: DatabaseMigration.Registry = {
 describe("migration lifecycle", () => {
   test("every upstream migration is either in the baseline or ported", () => {
     expect(DatabaseMigration.pending()).toEqual([])
-    expect(ids).toContain(DatabaseMigration.BASELINE)
+    expect([...DatabaseMigration.BASELINE_IDS].every((id) => ids.includes(id))).toBe(true)
+    expect(DatabaseMigration.BASELINE_IDS.size).toBe(ids.length)
   })
 
   test("pending names an upstream migration that is newer than the baseline and has no port", () => {
     expect(DatabaseMigration.pending({ ids: [...ids, next], ported: {} })).toEqual([next])
     expect(DatabaseMigration.pending(withPort)).toEqual([])
+  })
+
+  test("pending names an unknown upstream migration whatever its timestamp", () => {
+    // A migration generated early and merged late carries an old timestamp.
+    const late = "20260101000000_generated_early_merged_late"
+    expect(DatabaseMigration.pending({ ids: [...ids, late], ported: {} })).toEqual([late])
   })
 
   test("verify refuses an empty schema and changes nothing", () =>
@@ -138,10 +145,11 @@ describe("migration lifecycle", () => {
     inSchema((db) =>
       Effect.gen(function* () {
         yield* DatabaseMigration.migrate(db)
-        yield* db.run(sql`delete from migration where id = ${DatabaseMigration.BASELINE}`)
+        const [removed] = [...DatabaseMigration.BASELINE_IDS].sort().slice(-1)
+        yield* db.run(sql`delete from migration where id = ${removed}`)
         const exit = yield* DatabaseMigration.verify(db).pipe(Effect.exit)
         expect(exit._tag).toBe("Failure")
-        expect(String(exit)).toContain(DatabaseMigration.BASELINE)
+        expect(String(exit)).toContain(removed)
       }),
     ))
 
@@ -173,10 +181,11 @@ describe("migration lifecycle", () => {
         yield* Effect.gen(function* () {
           yield* DatabaseMigration.migrate(db)
           yield* DatabaseMigration.migrate(db, { schema: second })
-          const visited = yield* DatabaseMigration.migrateAll(db, withPort)
-          expect(visited).toContain(first)
-          expect(visited).toContain(second)
-          expect(visited).not.toContain(empty)
+          const { done, failed } = yield* DatabaseMigration.migrateAll(db, withPort)
+          expect(done).toContain(first)
+          expect(done).toContain(second)
+          expect(done).not.toContain(empty)
+          expect(failed).toEqual([])
           for (const name of [first, second])
             expect(yield* db.all(sql.raw(`select id from "${name}".marker`))).toEqual([])
           expect(yield* db.all(sql`select 1 from information_schema.tables where table_schema = ${empty}`)).toEqual([])
@@ -189,6 +198,42 @@ describe("migration lifecycle", () => {
             ]),
           ),
         )
+      }),
+    ))
+})
+
+describe("migrateAll selection", () => {
+  test("ignores a schema that has a migration table but none of opencode's tables", () =>
+    inSchema((db, own) =>
+      Effect.gen(function* () {
+        yield* DatabaseMigration.migrate(db)
+        const stranger = fresh()
+        yield* db.run(`CREATE SCHEMA "${stranger}"`)
+        yield* db.run(`CREATE TABLE "${stranger}".migration (id text PRIMARY KEY, time_completed double precision NOT NULL)`)
+        const result = yield* DatabaseMigration.migrateAll(db).pipe(
+          Effect.ensuring(db.run(`DROP SCHEMA "${stranger}" CASCADE`).pipe(Effect.ignore)),
+        )
+        expect(result.done).toContain(own)
+        expect(result.done).not.toContain(stranger)
+        expect(result.failed).toEqual([])
+      }),
+    ))
+
+  test("carries on past a schema that fails and reports it", () =>
+    inSchema((db, own) =>
+      Effect.gen(function* () {
+        yield* DatabaseMigration.migrate(db)
+        const broken = fresh()
+        yield* db.run(`CREATE SCHEMA "${broken}"`)
+        yield* db.run(`CREATE TABLE "${broken}".session (id text PRIMARY KEY)`)
+        // A migration journal without the column the runner writes.
+        yield* db.run(`CREATE TABLE "${broken}".migration (id text PRIMARY KEY)`)
+        const result = yield* DatabaseMigration.migrateAll(db, withPort).pipe(
+          Effect.ensuring(db.run(`DROP SCHEMA "${broken}" CASCADE`).pipe(Effect.ignore)),
+        )
+        expect(result.done).toContain(own)
+        expect(result.failed.map((item) => item.schema)).toEqual([broken])
+        expect(yield* db.all(sql`select id from marker`)).toEqual([])
       }),
     ))
 })

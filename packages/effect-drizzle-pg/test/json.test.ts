@@ -50,6 +50,37 @@ describe("jsonb column", () => {
       }),
     ))
 
+  test("stores a lone surrogate as U+FFFD, as text columns do", () =>
+    withSchema((db) =>
+      Effect.gen(function* () {
+        yield* db.run(create)
+        // Shell output cut at 30,000 characters can start inside an emoji.
+        const value = {
+          out: "\uDE00 after the cut",
+          key: { ["k\uD83D"]: "high surrogate in a key" },
+          ok: "x\uD83D\uDE00",
+        }
+        yield* db.insert(Doc).values({ id: "a", data: value }).run()
+        expect((yield* db.select().from(Doc).where(eq(Doc.id, "a")).get())!.data).toEqual({
+          out: "\uFFFD after the cut",
+          key: { ["k\uFFFD"]: "high surrogate in a key" },
+          ok: "x\uD83D\uDE00",
+        })
+      }),
+    ))
+
+  test("round-trips top-level strings, numbers, arrays and null", () =>
+    withSchema((db) =>
+      Effect.gen(function* () {
+        yield* db.run(sql`CREATE TABLE any_doc (id text PRIMARY KEY, data jsonb)`)
+        const AnyDoc = pgTable("any_doc", { id: text().primaryKey(), data: jsonb().$type<unknown>() })
+        const values: Record<string, unknown> = { s: "abc", digits: "123", n: 123, a: [1, "2"], z: null, b: false }
+        for (const [id, data] of Object.entries(values)) yield* db.insert(AnyDoc).values({ id, data }).run()
+        for (const [id, data] of Object.entries(values))
+          expect((yield* db.select().from(AnyDoc).where(eq(AnyDoc.id, id)).get())!.data).toEqual(data)
+      }),
+    ))
+
   test("stores a 5 MB string value", () =>
     withSchema((db) =>
       Effect.gen(function* () {

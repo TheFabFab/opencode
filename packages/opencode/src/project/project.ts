@@ -414,6 +414,11 @@ const layer = Layer.effect(
       ).pipe(Effect.map((arr) => arr.filter((x): x is string => x !== undefined)))
     })
 
+    // The sandbox list is read and written back whole, so the two stay in one
+    // transaction; otherwise sandboxes added at the same time overwrite each other.
+    const inOneTransaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      db.transaction(() => effect).pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)))
+
     const addSandbox = Effect.fn("Project.addSandbox")(function* (id: ProjectV2.ID, directory: string) {
       const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get().pipe(Effect.orDie)
       if (!row) throw new Error(`Project not found: ${id}`)
@@ -429,7 +434,7 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
       if (!result) throw new Error(`Project not found: ${id}`)
       yield* emitUpdated(fromRow(result))
-    })
+    }, inOneTransaction)
 
     const removeSandbox = Effect.fn("Project.removeSandbox")(function* (id: ProjectV2.ID, directory: string) {
       const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get().pipe(Effect.orDie)
@@ -445,7 +450,7 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
       if (!result) throw new Error(`Project not found: ${id}`)
       yield* emitUpdated(fromRow(result))
-    })
+    }, inOneTransaction)
 
     return Service.of({
       init,
