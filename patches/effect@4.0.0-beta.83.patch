@@ -1,3 +1,112 @@
+diff --git a/dist/internal/effect.js b/dist/internal/effect.js
+index 052c8e0ad2ff8007f4fc828dd577ff78e0129b10..2690ef7514b84c54e40a2358a5df45e72aa7c877 100644
+--- a/dist/internal/effect.js
++++ b/dist/internal/effect.js
+@@ -329,7 +329,8 @@ export class FiberImpl {
+     this.setContext(context);
+     this.id = ++fiberIdStore.id;
+     this.currentOpCount = 0;
+-    this.currentLoopCount = 0;
++    this._running = false;
++    this._deferredInterrupt = false;
+     this.interruptible = interruptible;
+     this._stack = [];
+     this._observers = [];
+@@ -343,7 +344,8 @@ export class FiberImpl {
+   id;
+   interruptible;
+   currentOpCount;
+-  currentLoopCount;
++  _running;
++  _deferredInterrupt;
+   _stack;
+   _observers;
+   _exit;
+@@ -395,7 +397,11 @@ export class FiberImpl {
+     }
+     this._interruptedCause = this._interruptedCause ? causeCombine(this._interruptedCause, cause) : cause;
+     if (this.interruptible) {
+-      this.evaluate(failCause(this._interruptedCause));
++      if (this._running) {
++        this._deferredInterrupt = true;
++      } else {
++        this.evaluate(failCause(this._interruptedCause));
++      }
+     }
+   }
+   pollUnsafe() {
+@@ -429,12 +435,17 @@ export class FiberImpl {
+   runLoop(effect) {
+     const prevFiber = globalThis[currentFiberTypeId];
+     globalThis[currentFiberTypeId] = this;
++    const prevRunning = this._running;
++    this._running = true;
+     let yielding = false;
+     let current = effect;
+     this.currentOpCount = 0;
+-    const currentLoop = ++this.currentLoopCount;
+     try {
+       while (true) {
++        if (this._deferredInterrupt) {
++          this._deferredInterrupt = false;
++          current = failCause(this._interruptedCause);
++        }
+         this.currentOpCount++;
+         if (!yielding && !this.currentPreventYield && this.currentScheduler.shouldYield(this)) {
+           yielding = true;
+@@ -442,14 +453,16 @@ export class FiberImpl {
+           current = flatMap(yieldNow, () => prev);
+         }
+         current = this.currentTracerContext ? this.currentTracerContext(current, this) : current[evaluate](this);
+-        if (currentLoop !== this.currentLoopCount) {
+-          // another effect has taken over the loop,
+-          return Yield;
+-        } else if (current === Yield) {
++        if (current === Yield) {
+           const yielded = this._yielded;
+           if (ExitTypeId in yielded) {
++            this._deferredInterrupt = false;
+             this._yielded = undefined;
+             return yielded;
++          } else if (this._deferredInterrupt) {
++            this._yielded = undefined;
++            yielded();
++            continue;
+           }
+           return Yield;
+         }
+@@ -460,11 +473,15 @@ export class FiberImpl {
+       }
+       return this.runLoop(exitDie(error));
+     } finally {
+-      ;
++      this._running = prevRunning;
+       globalThis[currentFiberTypeId] = prevFiber;
+     }
+   }
+   getCont(symbol) {
++    if (this._deferredInterrupt) {
++      this._deferredInterrupt = false;
++      return deferredInterruptCont;
++    }
+     while (true) {
+       const op = this._stack.pop();
+       if (!op) return undefined;
+@@ -508,6 +525,14 @@ export class FiberImpl {
+     return this.currentSpan?._tag === "Span" ? this.currentSpan : undefined;
+   }
+ }
++const deferredInterruptCont = {
++  [contA](_value, fiber) {
++    return failCause(fiber._interruptedCause);
++  },
++  [contE](_cause, fiber) {
++    return failCause(fiber._interruptedCause);
++  }
++};
+ const fiberMiddleware = {
+   interruptChildren: undefined
+ };
 diff --git a/dist/unstable/httpapi/HttpApiSchema.js b/dist/unstable/httpapi/HttpApiSchema.js
 index ecb6603d1ee4e89e92174b3a1100e8c9c720b3f3..08b832b6b3e9e4d10df156eca36b16f571f67f6e 100644
 --- a/dist/unstable/httpapi/HttpApiSchema.js
