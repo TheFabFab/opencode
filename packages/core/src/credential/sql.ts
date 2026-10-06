@@ -1,4 +1,4 @@
-import { bigint, pgTable, text, jsonb, boolean } from "drizzle-orm/pg-core"
+import { pgTable, text, jsonb, boolean } from "drizzle-orm/pg-core"
 import { Timestamps } from "../database/schema.sql"
 import type { Credential } from "../credential"
 

@@ -1,4 +1,4 @@
-import { pgTable, text, bigint, jsonb } from "drizzle-orm/pg-core"
+import { pgTable, text, doublePrecision, jsonb } from "drizzle-orm/pg-core"
 import { ProjectTable } from "../project/sql"
 import { ProjectV2 } from "../project"
 import { WorkspaceV2 } from "../workspace"
@@ -14,7 +14,7 @@ export const WorkspaceTable = pgTable("workspace", {
     .$type<ProjectV2.ID>()
     .notNull()
     .references(() => ProjectTable.id, { onDelete: "cascade" }),
-  time_used: bigint({ mode: "number" })
+  time_used: doublePrecision()
     .notNull()
     .$default(() => Date.now()),
 })

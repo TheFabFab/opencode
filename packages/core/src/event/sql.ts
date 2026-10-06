@@ -1,4 +1,4 @@
-import { pgTable, text, bigint, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core"
+import { pgTable, text, index, uniqueIndex, bigint, jsonb } from "drizzle-orm/pg-core"
 import type { EventV2 } from "../event"
 
 export const EventSequenceTable = pgTable("event_sequence", {

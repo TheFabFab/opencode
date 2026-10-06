@@ -1,4 +1,4 @@
-import { pgTable, text, bigint, index, primaryKey, doublePrecision, uniqueIndex, jsonb } from "drizzle-orm/pg-core"
+import { pgTable, text, index, primaryKey, uniqueIndex, bigint, doublePrecision, jsonb } from "drizzle-orm/pg-core"
 import * as DatabasePath from "../database/path"
 import { ProjectTable } from "../project/sql"
 import type { SessionMessage } from "./message"
@@ -55,8 +55,8 @@ export const SessionTable = pgTable(
       variant?: string
     }>(),
     ...Timestamps,
-    time_compacting: bigint({ mode: "number" }),
-    time_archived: bigint({ mode: "number" }),
+    time_compacting: doublePrecision(),
+    time_archived: doublePrecision(),
   },
   (table) => [
     index("session_project_idx").on(table.project_id),
@@ -149,7 +149,7 @@ export const SessionInputTable = pgTable(
     delivery: text().$type<SessionInput.Delivery>().notNull(),
     admitted_seq: bigint({ mode: "number" }).notNull(),
     promoted_seq: bigint({ mode: "number" }),
-    time_created: bigint({ mode: "number" })
+    time_created: doublePrecision()
       .notNull()
       .$default(() => Date.now()),
   },

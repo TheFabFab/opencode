@@ -1,4 +1,4 @@
-import { pgTable, text, bigint, primaryKey, jsonb } from "drizzle-orm/pg-core"
+import { pgTable, text, primaryKey, doublePrecision, jsonb } from "drizzle-orm/pg-core"
 import * as DatabasePath from "../database/path"
 import { Timestamps } from "../database/schema.sql"
 import { ProjectSchema } from "./schema"
@@ -12,7 +12,7 @@ export const ProjectTable = pgTable("project", {
   icon_url_override: text(),
   icon_color: text(),
   ...Timestamps,
-  time_initialized: bigint({ mode: "number" }),
+  time_initialized: doublePrecision(),
   sandboxes: DatabasePath.absoluteArrayColumn().notNull(),
   commands: jsonb().$type<{ start?: string }>(),
 })
@@ -27,7 +27,7 @@ export const ProjectDirectoryTable = pgTable(
     directory: DatabasePath.absoluteColumn().notNull(),
     type: text().$type<"main" | "root" | "git_worktree">(),
     strategy: text(),
-    time_created: bigint({ mode: "number" })
+    time_created: doublePrecision()
       .notNull()
       .$default(() => Date.now()),
   },

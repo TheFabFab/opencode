@@ -1,4 +1,4 @@
-import { pgTable, text, bigint, primaryKey, boolean } from "drizzle-orm/pg-core"
+import { pgTable, text, primaryKey, bigint, doublePrecision, boolean } from "drizzle-orm/pg-core"
 
 import { AccountV2 } from "../account"
 import { Timestamps } from "../database/schema.sql"
@@ -9,7 +9,7 @@ export const AccountTable = pgTable("account", {
   url: text().notNull(),
   access_token: text().$type<AccountV2.AccessToken>().notNull(),
   refresh_token: text().$type<AccountV2.RefreshToken>().notNull(),
-  token_expiry: bigint({ mode: "number" }),
+  token_expiry: doublePrecision(),
   ...Timestamps,
 })
 
@@ -29,7 +29,7 @@ export const ControlAccountTable = pgTable(
     url: text().notNull(),
     access_token: text().$type<AccountV2.AccessToken>().notNull(),
     refresh_token: text().$type<AccountV2.RefreshToken>().notNull(),
-    token_expiry: bigint({ mode: "number" }),
+    token_expiry: doublePrecision(),
     active: boolean()
       .notNull()
       .$default(() => false),

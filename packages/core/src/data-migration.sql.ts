@@ -1,6 +1,6 @@
-import { bigint, pgTable, text } from "drizzle-orm/pg-core"
+import { pgTable, text, doublePrecision } from "drizzle-orm/pg-core"
 
 export const DataMigrationTable = pgTable("data_migration", {
   name: text().primaryKey(),
-  time_completed: bigint({ mode: "number" }).notNull(),
+  time_completed: doublePrecision().notNull(),
 })
