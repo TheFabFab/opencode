@@ -1,10 +1,10 @@
 import { defineConfig } from "drizzle-kit"
 
 export default defineConfig({
-  dialect: "sqlite",
+  dialect: "postgresql",
   schema: ["./src/**/*.sql.ts", "./src/**/sql.ts"],
   out: "./migration",
   dbCredentials: {
-    url: "/home/thdxr/.local/share/opencode/opencode.db",
+    url: "postgresql://postgres@127.0.0.1:55432/postgres",
   },
 })

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index, primaryKey, real, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { pgTable, text, bigint, index, primaryKey, doublePrecision, uniqueIndex, jsonb } from "drizzle-orm/pg-core"
 import * as DatabasePath from "../database/path"
 import { ProjectTable } from "../project/sql"
 import type { SessionMessage } from "./message"
@@ -19,7 +19,7 @@ type SessionMessageData = Omit<(typeof SessionMessage.Message)["Encoded"], "type
 type V1MessageData = Omit<SessionV1.Info, "id" | "sessionID">
 type V1PartData = Omit<SessionV1.Part, "id" | "sessionID" | "messageID">
 
-export const SessionTable = sqliteTable(
+export const SessionTable = pgTable(
   "session",
   {
     id: text().$type<SessionSchema.ID>().primaryKey(),
@@ -35,28 +35,28 @@ export const SessionTable = sqliteTable(
     title: text().notNull(),
     version: text().notNull(),
     share_url: text(),
-    summary_additions: integer(),
-    summary_deletions: integer(),
-    summary_files: integer(),
-    summary_diffs: text({ mode: "json" }).$type<Snapshot.LegacyFileDiff[]>(),
-    metadata: text({ mode: "json" }).$type<Record<string, unknown>>(),
-    cost: real().notNull().default(0),
-    tokens_input: integer().notNull().default(0),
-    tokens_output: integer().notNull().default(0),
-    tokens_reasoning: integer().notNull().default(0),
-    tokens_cache_read: integer().notNull().default(0),
-    tokens_cache_write: integer().notNull().default(0),
-    revert: text({ mode: "json" }).$type<Revert.State>(),
-    permission: text({ mode: "json" }).$type<PermissionV1.Ruleset>(),
+    summary_additions: bigint({ mode: "number" }),
+    summary_deletions: bigint({ mode: "number" }),
+    summary_files: bigint({ mode: "number" }),
+    summary_diffs: jsonb().$type<Snapshot.LegacyFileDiff[]>(),
+    metadata: jsonb().$type<Record<string, unknown>>(),
+    cost: doublePrecision().notNull().default(0),
+    tokens_input: bigint({ mode: "number" }).notNull().default(0),
+    tokens_output: bigint({ mode: "number" }).notNull().default(0),
+    tokens_reasoning: bigint({ mode: "number" }).notNull().default(0),
+    tokens_cache_read: bigint({ mode: "number" }).notNull().default(0),
+    tokens_cache_write: bigint({ mode: "number" }).notNull().default(0),
+    revert: jsonb().$type<Revert.State>(),
+    permission: jsonb().$type<PermissionV1.Ruleset>(),
     agent: text(),
-    model: text({ mode: "json" }).$type<{
+    model: jsonb().$type<{
       id: string
       providerID: string
       variant?: string
     }>(),
     ...Timestamps,
-    time_compacting: integer(),
-    time_archived: integer(),
+    time_compacting: bigint({ mode: "number" }),
+    time_archived: bigint({ mode: "number" }),
   },
   (table) => [
     index("session_project_idx").on(table.project_id),
@@ -65,7 +65,7 @@ export const SessionTable = sqliteTable(
   ],
 )
 
-export const MessageTable = sqliteTable(
+export const MessageTable = pgTable(
   "message",
   {
     id: text().$type<MessageID>().primaryKey(),
@@ -74,12 +74,12 @@ export const MessageTable = sqliteTable(
       .notNull()
       .references(() => SessionTable.id, { onDelete: "cascade" }),
     ...Timestamps,
-    data: text({ mode: "json" }).notNull().$type<V1MessageData>(),
+    data: jsonb().notNull().$type<V1MessageData>(),
   },
   (table) => [index("message_session_time_created_id_idx").on(table.session_id, table.time_created, table.id)],
 )
 
-export const PartTable = sqliteTable(
+export const PartTable = pgTable(
   "part",
   {
     id: text().$type<PartID>().primaryKey(),
@@ -89,7 +89,7 @@ export const PartTable = sqliteTable(
       .references(() => MessageTable.id, { onDelete: "cascade" }),
     session_id: text().$type<SessionSchema.ID>().notNull(),
     ...Timestamps,
-    data: text({ mode: "json" }).notNull().$type<V1PartData>(),
+    data: jsonb().notNull().$type<V1PartData>(),
   },
   (table) => [
     index("part_message_id_id_idx").on(table.message_id, table.id),
@@ -97,7 +97,7 @@ export const PartTable = sqliteTable(
   ],
 )
 
-export const TodoTable = sqliteTable(
+export const TodoTable = pgTable(
   "todo",
   {
     session_id: text()
@@ -107,7 +107,7 @@ export const TodoTable = sqliteTable(
     content: text().notNull(),
     status: text().notNull(),
     priority: text().notNull(),
-    position: integer().notNull(),
+    position: bigint({ mode: "number" }).notNull(),
     ...Timestamps,
   },
   (table) => [
@@ -116,7 +116,7 @@ export const TodoTable = sqliteTable(
   ],
 )
 
-export const SessionMessageTable = sqliteTable(
+export const SessionMessageTable = pgTable(
   "session_message",
   {
     id: text().$type<SessionMessage.ID>().primaryKey(),
@@ -125,9 +125,9 @@ export const SessionMessageTable = sqliteTable(
       .notNull()
       .references(() => SessionTable.id, { onDelete: "cascade" }),
     type: text().$type<SessionMessage.Type>().notNull(),
-    seq: integer().notNull(),
+    seq: bigint({ mode: "number" }).notNull(),
     ...Timestamps,
-    data: text({ mode: "json" }).notNull().$type<SessionMessageData>(),
+    data: jsonb().notNull().$type<SessionMessageData>(),
   },
   (table) => [
     uniqueIndex("session_message_session_seq_idx").on(table.session_id, table.seq),
@@ -137,7 +137,7 @@ export const SessionMessageTable = sqliteTable(
   ],
 )
 
-export const SessionInputTable = sqliteTable(
+export const SessionInputTable = pgTable(
   "session_input",
   {
     id: text().$type<SessionMessage.ID>().primaryKey(),
@@ -145,11 +145,11 @@ export const SessionInputTable = sqliteTable(
       .$type<SessionSchema.ID>()
       .notNull()
       .references(() => SessionTable.id, { onDelete: "cascade" }),
-    prompt: text({ mode: "json" }).notNull().$type<Prompt>(),
+    prompt: jsonb().notNull().$type<Prompt>(),
     delivery: text().$type<SessionInput.Delivery>().notNull(),
-    admitted_seq: integer().notNull(),
-    promoted_seq: integer(),
-    time_created: integer()
+    admitted_seq: bigint({ mode: "number" }).notNull(),
+    promoted_seq: bigint({ mode: "number" }),
+    time_created: bigint({ mode: "number" })
       .notNull()
       .$default(() => Date.now()),
   },
@@ -165,12 +165,12 @@ export const SessionInputTable = sqliteTable(
   ],
 )
 
-export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
+export const SessionContextEpochTable = pgTable("session_context_epoch", {
   session_id: text()
     .$type<SessionSchema.ID>()
     .primaryKey()
     .references(() => SessionTable.id, { onDelete: "cascade" }),
   baseline: text().notNull(),
-  snapshot: text({ mode: "json" }).notNull().$type<SystemContext.Snapshot>(),
-  baseline_seq: integer().notNull(),
+  snapshot: jsonb().notNull().$type<SystemContext.Snapshot>(),
+  baseline_seq: bigint({ mode: "number" }).notNull(),
 })

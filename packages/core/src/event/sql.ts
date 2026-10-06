@@ -1,22 +1,22 @@
-import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { pgTable, text, bigint, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core"
 import type { EventV2 } from "../event"
 
-export const EventSequenceTable = sqliteTable("event_sequence", {
+export const EventSequenceTable = pgTable("event_sequence", {
   aggregate_id: text().notNull().primaryKey(),
-  seq: integer().notNull(),
+  seq: bigint({ mode: "number" }).notNull(),
   owner_id: text(),
 })
 
-export const EventTable = sqliteTable(
+export const EventTable = pgTable(
   "event",
   {
     id: text().$type<EventV2.ID>().primaryKey(),
     aggregate_id: text()
       .notNull()
       .references(() => EventSequenceTable.aggregate_id, { onDelete: "cascade" }),
-    seq: integer().notNull(),
+    seq: bigint({ mode: "number" }).notNull(),
     type: text().notNull(),
-    data: text({ mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    data: jsonb().$type<Record<string, unknown>>().notNull(),
   },
   (table) => [
     uniqueIndex("event_aggregate_seq_idx").on(table.aggregate_id, table.seq),
