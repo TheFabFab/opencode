@@ -2,7 +2,7 @@
 """Renders a drizzle-kit migration.sql into packages/core/src/database/schema.gen.ts.
 
 Usage: render-baseline.py <migration.sql> <schema.gen.ts>
-The output format is the one packages/core/script/migration.ts writes.
+The whole baseline is one `tx.run`, so creating a schema costs one round trip.
 """
 import sys
 
@@ -15,20 +15,23 @@ def escape(line: str) -> str:
     return line.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
 
 
-def render(statement: str) -> str:
-    lines = statement.replace("\t", "  ").split("\n")
-    if len(lines) == 1:
-        return f"      yield* tx.run(`{escape(lines[0])}`)"
-    body = "\n".join("        " + escape(line) for line in lines)
-    return f"      yield* tx.run(`\n{body}\n      `)"
+def indent(statement: str) -> str:
+    return "\n".join("        " + escape(line) for line in statement.replace("\t", "  ").split("\n"))
 
+
+for statement in statements:
+    if not statement.endswith(";"):
+        sys.exit(f"statement does not end with a semicolon: {statement[:60]}")
 
 with open(out_path, "w") as file:
     file.write(
         'import { Effect } from "effect"\n'
         'import type { DatabaseMigration } from "./migration"\n\n'
         "export default {\n  up(tx) {\n    return Effect.gen(function* () {\n"
-        + "\n".join(render(statement) for statement in statements)
+        # One round trip: Postgres runs a parameterless multi-statement string as a unit.
+        + "      yield* tx.run(`\n"
+        + "\n".join(indent(statement) for statement in statements)
+        + "\n      `)"
         + '\n    })\n  },\n} satisfies Omit<DatabaseMigration.Migration, "id">\n'
     )
 print(f"wrote {out_path} with {len(statements)} statements")
