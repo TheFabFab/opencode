@@ -64,7 +64,8 @@ same change is a merge conflict in a file we own, which is the signal we want.
 
 | SQLite today | Postgres | Reason |
 | --- | --- | --- |
-| `integer` holding a millisecond timestamp or a count | `bigint`, read as a JS number | A 32-bit `integer` cannot hold a millisecond timestamp |
+| `integer` holding a millisecond timestamp | `double precision` | SQLite stores a fractional value in an integer column unchanged, and upstream relies on it: its pagination tests write `1000.5` as a message time. `double precision` holds every JS number exactly as SQLite did |
+| `integer` holding a count, a sequence number or an id | `bigint`, read as a JS number | A 32-bit `integer` is too small |
 | `text` in JSON mode (14 columns) | `jsonb` | The web tier reads these directly |
 | `integer` in boolean mode (2 columns) | `boolean` | |
 | `real` (session cost) | `double precision` | Postgres `real` is 4 bytes and would lose precision |
