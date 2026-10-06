@@ -6,7 +6,7 @@ run-name: "documentor release ${{ github.ref_name }}"
 # `COPY --from=ghcr.io/<owner>/opencode@sha256:... /opencode ...`.
 #
 # A release is a tag `v<upstream version>-documentor.<n>` on the `documentor`
-# branch. The binary reports the upstream version alone: on start opencode
+# branch, or `v<upstream version>-documentor-pg.<n>` on `documentor-pg`. The binary reports the upstream version alone: on start opencode
 # installs `@opencode-ai/plugin@<its own version>` from npm, and only upstream
 # versions exist there. The fork revision travels in the image tag and labels.
 
@@ -14,6 +14,7 @@ on:
   push:
     tags:
       - "v*-documentor.*"
+      - "v*-documentor-pg.*"
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -32,8 +33,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          if ! [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-documentor\.([0-9]+)$ ]]; then
-            echo "tag '$tag' is not v<major>.<minor>.<patch>-documentor.<n>" >&2
+          if ! [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-documentor(-pg)?\.([0-9]+)$ ]]; then
+            echo "tag '$tag' is not v<major>.<minor>.<patch>-documentor.<n> or -documentor-pg.<n>" >&2
             exit 1
           fi
           upstream="${BASH_REMATCH[1]}"

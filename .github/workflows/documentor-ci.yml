@@ -92,3 +92,34 @@ jobs:
       - name: Run HttpApi exerciser gates
         working-directory: packages/opencode
         run: bun run test:httpapi
+
+  binary:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_INITDB_ARGS: --locale=C.UTF-8
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OPENCODE_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Build
+        working-directory: packages/opencode
+        run: bun run script/build.ts --single
+        env:
+          OPENCODE_VERSION: "1.18.34"
+
+      - name: Serve from Postgres as a scope role
+        run: documentor/scripts/binary-smoke.sh packages/opencode/dist/opencode-linux-x64/bin/opencode
