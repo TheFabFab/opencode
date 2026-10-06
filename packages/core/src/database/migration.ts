@@ -73,8 +73,10 @@ export function migrate(db: Database.Client, options: { schema?: string; registr
       if (existing.length === 0) {
         yield* schema.up(tx)
         yield* tx.run(sql`CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed DOUBLE PRECISION NOT NULL)`)
-        for (const id of expected.filter((id) => id <= BASELINE))
-          yield* tx.run(sql`INSERT INTO migration (id, time_completed) VALUES (${id}, ${Date.now()})`)
+        const now = Date.now()
+        const covered = expected.filter((id) => id <= BASELINE).map((id) => sql`(${id}, ${now})`)
+        if (covered.length > 0)
+          yield* tx.run(sql`INSERT INTO migration (id, time_completed) VALUES ${sql.join(covered, sql`, `)}`)
       }
       const completed = new Set((yield* tx.all<{ id: string }>(sql`SELECT id FROM migration`)).map((row) => row.id))
       for (const id of expected) {

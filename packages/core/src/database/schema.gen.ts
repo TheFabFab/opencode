@@ -15,21 +15,15 @@ export default {
           "project_id" text NOT NULL,
           "time_used" double precision NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "data_migration" (
           "name" text PRIMARY KEY,
           "time_completed" double precision NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "account_state" (
           "id" bigint PRIMARY KEY,
           "active_account_id" text,
           "active_org_id" text
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "account" (
           "id" text PRIMARY KEY,
           "email" text NOT NULL,
@@ -40,8 +34,6 @@ export default {
           "time_created" double precision NOT NULL,
           "time_updated" double precision NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "control_account" (
           "email" text,
           "url" text,
@@ -53,8 +45,6 @@ export default {
           "time_updated" double precision NOT NULL,
           CONSTRAINT "control_account_pkey" PRIMARY KEY("email","url")
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "credential" (
           "id" text PRIMARY KEY,
           "integration_id" text,
@@ -66,15 +56,11 @@ export default {
           "time_created" double precision NOT NULL,
           "time_updated" double precision NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "event_sequence" (
           "aggregate_id" text PRIMARY KEY,
           "seq" bigint NOT NULL,
           "owner_id" text
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "event" (
           "id" text PRIMARY KEY,
           "aggregate_id" text NOT NULL,
@@ -82,8 +68,6 @@ export default {
           "type" text NOT NULL,
           "data" jsonb NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "permission" (
           "id" text PRIMARY KEY,
           "project_id" text NOT NULL,
@@ -92,8 +76,6 @@ export default {
           "time_created" double precision NOT NULL,
           "time_updated" double precision NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "project_directory" (
           "project_id" text,
           "directory" text,
@@ -102,8 +84,6 @@ export default {
           "time_created" double precision NOT NULL,
           CONSTRAINT "project_directory_pkey" PRIMARY KEY("project_id","directory")
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "project" (
           "id" text PRIMARY KEY,
           "worktree" text NOT NULL,
@@ -118,8 +98,6 @@ export default {
           "sandboxes" text NOT NULL,
           "commands" jsonb
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "message" (
           "id" text PRIMARY KEY,
           "session_id" text NOT NULL,
@@ -127,8 +105,6 @@ export default {
           "time_updated" double precision NOT NULL,
           "data" jsonb NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "part" (
           "id" text PRIMARY KEY,
           "message_id" text NOT NULL,
@@ -137,16 +113,12 @@ export default {
           "time_updated" double precision NOT NULL,
           "data" jsonb NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "session_context_epoch" (
           "session_id" text PRIMARY KEY,
           "baseline" text NOT NULL,
           "snapshot" jsonb NOT NULL,
           "baseline_seq" bigint NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "session_input" (
           "id" text PRIMARY KEY,
           "session_id" text NOT NULL,
@@ -156,8 +128,6 @@ export default {
           "promoted_seq" bigint,
           "time_created" double precision NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "session_message" (
           "id" text PRIMARY KEY,
           "session_id" text NOT NULL,
@@ -167,8 +137,6 @@ export default {
           "time_updated" double precision NOT NULL,
           "data" jsonb NOT NULL
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "session" (
           "id" text PRIMARY KEY,
           "project_id" text NOT NULL,
@@ -200,8 +168,6 @@ export default {
           "time_compacting" double precision,
           "time_archived" double precision
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "todo" (
           "session_id" text,
           "content" text NOT NULL,
@@ -212,8 +178,6 @@ export default {
           "time_updated" double precision NOT NULL,
           CONSTRAINT "todo_pkey" PRIMARY KEY("session_id","position")
         );
-      `)
-      yield* tx.run(`
         CREATE TABLE "session_share" (
           "session_id" text PRIMARY KEY,
           "id" text NOT NULL,
@@ -222,77 +186,37 @@ export default {
           "time_created" double precision NOT NULL,
           "time_updated" double precision NOT NULL
         );
+        CREATE UNIQUE INDEX "event_aggregate_seq_idx" ON "event" ("aggregate_id","seq");
+        CREATE INDEX "event_aggregate_type_seq_idx" ON "event" ("aggregate_id","type","seq");
+        CREATE UNIQUE INDEX "permission_project_action_resource_idx" ON "permission" ("project_id","action","resource");
+        CREATE INDEX "message_session_time_created_id_idx" ON "message" ("session_id","time_created","id");
+        CREATE INDEX "part_message_id_id_idx" ON "part" ("message_id","id");
+        CREATE INDEX "part_session_idx" ON "part" ("session_id");
+        CREATE INDEX "session_input_session_pending_delivery_seq_idx" ON "session_input" ("session_id","promoted_seq","delivery","admitted_seq");
+        CREATE UNIQUE INDEX "session_input_session_admitted_seq_idx" ON "session_input" ("session_id","admitted_seq");
+        CREATE UNIQUE INDEX "session_input_session_promoted_seq_idx" ON "session_input" ("session_id","promoted_seq");
+        CREATE UNIQUE INDEX "session_message_session_seq_idx" ON "session_message" ("session_id","seq");
+        CREATE INDEX "session_message_session_type_seq_idx" ON "session_message" ("session_id","type","seq");
+        CREATE INDEX "session_message_session_time_created_id_idx" ON "session_message" ("session_id","time_created","id");
+        CREATE INDEX "session_message_time_created_idx" ON "session_message" ("time_created");
+        CREATE INDEX "session_project_idx" ON "session" ("project_id");
+        CREATE INDEX "session_workspace_idx" ON "session" ("workspace_id");
+        CREATE INDEX "session_parent_idx" ON "session" ("parent_id");
+        CREATE INDEX "todo_session_idx" ON "todo" ("session_id");
+        ALTER TABLE "workspace" ADD CONSTRAINT "workspace_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;
+        ALTER TABLE "account_state" ADD CONSTRAINT "account_state_active_account_id_account_id_fkey" FOREIGN KEY ("active_account_id") REFERENCES "account"("id") ON DELETE SET NULL;
+        ALTER TABLE "event" ADD CONSTRAINT "event_aggregate_id_event_sequence_aggregate_id_fkey" FOREIGN KEY ("aggregate_id") REFERENCES "event_sequence"("aggregate_id") ON DELETE CASCADE;
+        ALTER TABLE "permission" ADD CONSTRAINT "permission_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;
+        ALTER TABLE "project_directory" ADD CONSTRAINT "project_directory_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;
+        ALTER TABLE "message" ADD CONSTRAINT "message_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;
+        ALTER TABLE "part" ADD CONSTRAINT "part_message_id_message_id_fkey" FOREIGN KEY ("message_id") REFERENCES "message"("id") ON DELETE CASCADE;
+        ALTER TABLE "session_context_epoch" ADD CONSTRAINT "session_context_epoch_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;
+        ALTER TABLE "session_input" ADD CONSTRAINT "session_input_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;
+        ALTER TABLE "session_message" ADD CONSTRAINT "session_message_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;
+        ALTER TABLE "session" ADD CONSTRAINT "session_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;
+        ALTER TABLE "todo" ADD CONSTRAINT "todo_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;
+        ALTER TABLE "session_share" ADD CONSTRAINT "session_share_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;
       `)
-      yield* tx.run(`CREATE UNIQUE INDEX "event_aggregate_seq_idx" ON "event" ("aggregate_id","seq");`)
-      yield* tx.run(`CREATE INDEX "event_aggregate_type_seq_idx" ON "event" ("aggregate_id","type","seq");`)
-      yield* tx.run(
-        `CREATE UNIQUE INDEX "permission_project_action_resource_idx" ON "permission" ("project_id","action","resource");`,
-      )
-      yield* tx.run(
-        `CREATE INDEX "message_session_time_created_id_idx" ON "message" ("session_id","time_created","id");`,
-      )
-      yield* tx.run(`CREATE INDEX "part_message_id_id_idx" ON "part" ("message_id","id");`)
-      yield* tx.run(`CREATE INDEX "part_session_idx" ON "part" ("session_id");`)
-      yield* tx.run(
-        `CREATE INDEX "session_input_session_pending_delivery_seq_idx" ON "session_input" ("session_id","promoted_seq","delivery","admitted_seq");`,
-      )
-      yield* tx.run(
-        `CREATE UNIQUE INDEX "session_input_session_admitted_seq_idx" ON "session_input" ("session_id","admitted_seq");`,
-      )
-      yield* tx.run(
-        `CREATE UNIQUE INDEX "session_input_session_promoted_seq_idx" ON "session_input" ("session_id","promoted_seq");`,
-      )
-      yield* tx.run(`CREATE UNIQUE INDEX "session_message_session_seq_idx" ON "session_message" ("session_id","seq");`)
-      yield* tx.run(
-        `CREATE INDEX "session_message_session_type_seq_idx" ON "session_message" ("session_id","type","seq");`,
-      )
-      yield* tx.run(
-        `CREATE INDEX "session_message_session_time_created_id_idx" ON "session_message" ("session_id","time_created","id");`,
-      )
-      yield* tx.run(`CREATE INDEX "session_message_time_created_idx" ON "session_message" ("time_created");`)
-      yield* tx.run(`CREATE INDEX "session_project_idx" ON "session" ("project_id");`)
-      yield* tx.run(`CREATE INDEX "session_workspace_idx" ON "session" ("workspace_id");`)
-      yield* tx.run(`CREATE INDEX "session_parent_idx" ON "session" ("parent_id");`)
-      yield* tx.run(`CREATE INDEX "todo_session_idx" ON "todo" ("session_id");`)
-      yield* tx.run(
-        `ALTER TABLE "workspace" ADD CONSTRAINT "workspace_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "account_state" ADD CONSTRAINT "account_state_active_account_id_account_id_fkey" FOREIGN KEY ("active_account_id") REFERENCES "account"("id") ON DELETE SET NULL;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "event" ADD CONSTRAINT "event_aggregate_id_event_sequence_aggregate_id_fkey" FOREIGN KEY ("aggregate_id") REFERENCES "event_sequence"("aggregate_id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "permission" ADD CONSTRAINT "permission_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "project_directory" ADD CONSTRAINT "project_directory_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "message" ADD CONSTRAINT "message_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "part" ADD CONSTRAINT "part_message_id_message_id_fkey" FOREIGN KEY ("message_id") REFERENCES "message"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "session_context_epoch" ADD CONSTRAINT "session_context_epoch_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "session_input" ADD CONSTRAINT "session_input_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "session_message" ADD CONSTRAINT "session_message_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "session" ADD CONSTRAINT "session_project_id_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "project"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "todo" ADD CONSTRAINT "todo_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;`,
-      )
-      yield* tx.run(
-        `ALTER TABLE "session_share" ADD CONSTRAINT "session_share_session_id_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "session"("id") ON DELETE CASCADE;`,
-      )
     })
   },
 } satisfies Omit<DatabaseMigration.Migration, "id">
