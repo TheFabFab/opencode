@@ -1,4 +1,5 @@
-import { pgTable, text, doublePrecision, jsonb } from "drizzle-orm/pg-core"
+import { pgTable, doublePrecision } from "drizzle-orm/pg-core"
+import { jsonb, text } from "@opencode-ai/effect-drizzle-pg"
 import { ProjectTable } from "../project/sql"
 import { ProjectV2 } from "../project"
 import { WorkspaceV2 } from "../workspace"

@@ -1,4 +1,5 @@
-import { pgTable, text, index, primaryKey, uniqueIndex, bigint, doublePrecision, jsonb } from "drizzle-orm/pg-core"
+import { pgTable, index, primaryKey, uniqueIndex, doublePrecision } from "drizzle-orm/pg-core"
+import { count, jsonb, text } from "@opencode-ai/effect-drizzle-pg"
 import * as DatabasePath from "../database/path"
 import { ProjectTable } from "../project/sql"
 import type { SessionMessage } from "./message"
@@ -35,17 +36,17 @@ export const SessionTable = pgTable(
     title: text().notNull(),
     version: text().notNull(),
     share_url: text(),
-    summary_additions: bigint({ mode: "number" }),
-    summary_deletions: bigint({ mode: "number" }),
-    summary_files: bigint({ mode: "number" }),
+    summary_additions: count(),
+    summary_deletions: count(),
+    summary_files: count(),
     summary_diffs: jsonb().$type<Snapshot.LegacyFileDiff[]>(),
     metadata: jsonb().$type<Record<string, unknown>>(),
     cost: doublePrecision().notNull().default(0),
-    tokens_input: bigint({ mode: "number" }).notNull().default(0),
-    tokens_output: bigint({ mode: "number" }).notNull().default(0),
-    tokens_reasoning: bigint({ mode: "number" }).notNull().default(0),
-    tokens_cache_read: bigint({ mode: "number" }).notNull().default(0),
-    tokens_cache_write: bigint({ mode: "number" }).notNull().default(0),
+    tokens_input: count().notNull().default(0),
+    tokens_output: count().notNull().default(0),
+    tokens_reasoning: count().notNull().default(0),
+    tokens_cache_read: count().notNull().default(0),
+    tokens_cache_write: count().notNull().default(0),
     revert: jsonb().$type<Revert.State>(),
     permission: jsonb().$type<PermissionV1.Ruleset>(),
     agent: text(),
@@ -107,7 +108,7 @@ export const TodoTable = pgTable(
     content: text().notNull(),
     status: text().notNull(),
     priority: text().notNull(),
-    position: bigint({ mode: "number" }).notNull(),
+    position: count().notNull(),
     ...Timestamps,
   },
   (table) => [
@@ -125,7 +126,7 @@ export const SessionMessageTable = pgTable(
       .notNull()
       .references(() => SessionTable.id, { onDelete: "cascade" }),
     type: text().$type<SessionMessage.Type>().notNull(),
-    seq: bigint({ mode: "number" }).notNull(),
+    seq: count().notNull(),
     ...Timestamps,
     data: jsonb().notNull().$type<SessionMessageData>(),
   },
@@ -147,8 +148,8 @@ export const SessionInputTable = pgTable(
       .references(() => SessionTable.id, { onDelete: "cascade" }),
     prompt: jsonb().notNull().$type<Prompt>(),
     delivery: text().$type<SessionInput.Delivery>().notNull(),
-    admitted_seq: bigint({ mode: "number" }).notNull(),
-    promoted_seq: bigint({ mode: "number" }),
+    admitted_seq: count().notNull(),
+    promoted_seq: count(),
     time_created: doublePrecision()
       .notNull()
       .$default(() => Date.now()),
@@ -172,5 +173,5 @@ export const SessionContextEpochTable = pgTable("session_context_epoch", {
     .references(() => SessionTable.id, { onDelete: "cascade" }),
   baseline: text().notNull(),
   snapshot: jsonb().notNull().$type<SystemContext.Snapshot>(),
-  baseline_seq: bigint({ mode: "number" }).notNull(),
+  baseline_seq: count().notNull(),
 })

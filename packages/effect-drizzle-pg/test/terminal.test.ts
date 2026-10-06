@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { eq, sql } from "drizzle-orm"
-import { bigint, jsonb, pgTable, text } from "drizzle-orm/pg-core"
+import { bigint, pgTable, text } from "drizzle-orm/pg-core"
+import { jsonb } from "../src/index"
 import { Effect } from "effect"
 import { withSchema } from "./harness"
 

@@ -1,4 +1,5 @@
-import { pgTable, text, jsonb, boolean } from "drizzle-orm/pg-core"
+import { pgTable, boolean } from "drizzle-orm/pg-core"
+import { jsonb, text } from "@opencode-ai/effect-drizzle-pg"
 import { Timestamps } from "../database/schema.sql"
 import type { Credential } from "../credential"
 

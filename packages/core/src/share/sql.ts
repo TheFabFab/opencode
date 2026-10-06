@@ -1,4 +1,5 @@
-import { pgTable, text } from "drizzle-orm/pg-core"
+import { pgTable } from "drizzle-orm/pg-core"
+import { text } from "@opencode-ai/effect-drizzle-pg"
 import { SessionTable } from "../session/sql"
 import { Timestamps } from "../database/schema.sql"
 

@@ -1,4 +1,5 @@
-import { pgTable, text, uniqueIndex } from "drizzle-orm/pg-core"
+import { pgTable, uniqueIndex } from "drizzle-orm/pg-core"
+import { text } from "@opencode-ai/effect-drizzle-pg"
 import { Timestamps } from "../database/schema.sql"
 import { ProjectV2 } from "../project"
 import { ProjectTable } from "../project/sql"

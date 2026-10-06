@@ -1,9 +1,10 @@
-import { pgTable, text, index, uniqueIndex, bigint, jsonb } from "drizzle-orm/pg-core"
+import { pgTable, index, uniqueIndex } from "drizzle-orm/pg-core"
+import { count, jsonb, text } from "@opencode-ai/effect-drizzle-pg"
 import type { EventV2 } from "../event"
 
 export const EventSequenceTable = pgTable("event_sequence", {
   aggregate_id: text().notNull().primaryKey(),
-  seq: bigint({ mode: "number" }).notNull(),
+  seq: count().notNull(),
   owner_id: text(),
 })
 
@@ -14,7 +15,7 @@ export const EventTable = pgTable(
     aggregate_id: text()
       .notNull()
       .references(() => EventSequenceTable.aggregate_id, { onDelete: "cascade" }),
-    seq: bigint({ mode: "number" }).notNull(),
+    seq: count().notNull(),
     type: text().notNull(),
     data: jsonb().$type<Record<string, unknown>>().notNull(),
   },

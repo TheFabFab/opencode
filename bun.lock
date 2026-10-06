@@ -323,7 +323,7 @@
         "@lydell/node-pty": "catalog:",
         "@npmcli/arborist": "9.4.0",
         "@npmcli/config": "10.8.1",
-        "@opencode-ai/effect-drizzle-sqlite": "workspace:*",
+        "@opencode-ai/effect-drizzle-pg": "workspace:*",
         "@opencode-ai/effect-sqlite-node": "workspace:*",
         "@opencode-ai/llm": "workspace:*",
         "@opencode-ai/plugin": "workspace:*",
@@ -436,6 +436,21 @@
         "@parcel/watcher-linux-x64-musl": "2.5.1",
         "@parcel/watcher-win32-arm64": "2.5.1",
         "@parcel/watcher-win32-x64": "2.5.1",
+      },
+    },
+    "packages/effect-drizzle-pg": {
+      "name": "@opencode-ai/effect-drizzle-pg",
+      "version": "1.18.34",
+      "dependencies": {
+        "@effect/sql-pg": "4.0.0-beta.83",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
+        "pg": "8.21.0",
+      },
+      "devDependencies": {
+        "@tsconfig/bun": "catalog:",
+        "@types/bun": "catalog:",
+        "@typescript/native-preview": "catalog:",
       },
     },
     "packages/effect-drizzle-sqlite": {
@@ -1967,6 +1982,8 @@
     "@opencode-ai/core": ["@opencode-ai/core@workspace:packages/core"],
 
     "@opencode-ai/desktop": ["@opencode-ai/desktop@workspace:packages/desktop"],
+
+    "@opencode-ai/effect-drizzle-pg": ["@opencode-ai/effect-drizzle-pg@workspace:packages/effect-drizzle-pg"],
 
     "@opencode-ai/effect-drizzle-sqlite": ["@opencode-ai/effect-drizzle-sqlite@workspace:packages/effect-drizzle-sqlite"],
 

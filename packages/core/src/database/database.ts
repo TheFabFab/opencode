@@ -2,7 +2,7 @@ export * as Database from "./database"
 
 import * as EffectDrizzlePostgres from "drizzle-orm/effect-postgres"
 import * as PgClient from "@effect/sql-pg/PgClient"
-import "./pg-terminal"
+import "@opencode-ai/effect-drizzle-pg"
 import { Context, Effect, Layer, Redacted } from "effect"
 import { DatabaseMigration } from "./migration"
 import { makeGlobalNode } from "../effect/app-node"

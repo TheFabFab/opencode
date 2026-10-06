@@ -1,7 +1,7 @@
 import * as PgClient from "@effect/sql-pg/PgClient"
 import * as EffectDrizzlePostgres from "drizzle-orm/effect-postgres"
 import { Effect, Layer, Redacted } from "effect"
-import "../../src/database/pg-terminal"
+import "../src/index"
 
 export const adminUrl = process.env.OPENCODE_TEST_DATABASE_URL ?? "postgresql://postgres@127.0.0.1:5432/postgres"
 

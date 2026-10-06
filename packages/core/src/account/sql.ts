@@ -1,4 +1,5 @@
-import { pgTable, text, primaryKey, bigint, doublePrecision, boolean } from "drizzle-orm/pg-core"
+import { pgTable, primaryKey, doublePrecision, boolean } from "drizzle-orm/pg-core"
+import { count, text } from "@opencode-ai/effect-drizzle-pg"
 
 import { AccountV2 } from "../account"
 import { Timestamps } from "../database/schema.sql"
@@ -14,7 +15,7 @@ export const AccountTable = pgTable("account", {
 })
 
 export const AccountStateTable = pgTable("account_state", {
-  id: bigint({ mode: "number" }).primaryKey(),
+  id: count().primaryKey(),
   active_account_id: text()
     .$type<AccountV2.ID>()
     .references(() => AccountTable.id, { onDelete: "set null" }),

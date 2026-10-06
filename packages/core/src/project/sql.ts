@@ -1,4 +1,5 @@
-import { pgTable, text, primaryKey, doublePrecision, jsonb } from "drizzle-orm/pg-core"
+import { pgTable, primaryKey, doublePrecision } from "drizzle-orm/pg-core"
+import { jsonb, text } from "@opencode-ai/effect-drizzle-pg"
 import * as DatabasePath from "../database/path"
 import { Timestamps } from "../database/schema.sql"
 import { ProjectSchema } from "./schema"
