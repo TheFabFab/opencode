@@ -1,6 +1,6 @@
 # Postgres core — design
 
-6 October 2026 · status: review answers folded in, awaiting approval
+6 October 2026 · status: approved
 
 This is the first of the pieces that make up "opencode agent pods". It covers
 where opencode keeps its database state and how users and their projects are
@@ -213,5 +213,4 @@ workflows from `documentor` carried over. `documentor` stays on unmodified
    project is its own scope and the `global` scope can read all of them.
 3. Production runs the current stable Postgres major, 18.
 
-One assumption remains to confirm: the `global` scope reads project chats but
-does not write to them.
+4. The `global` scope reads project chats but does not write to them.
