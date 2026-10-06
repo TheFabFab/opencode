@@ -83,8 +83,11 @@ delete process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 delete process.env["OTEL_EXPORTER_OTLP_HEADERS"]
 delete process.env["OTEL_RESOURCE_ATTRIBUTES"]
 
-// Use in-memory sqlite
-process.env["OPENCODE_DB"] = ":memory:"
+// Each database layer a test builds gets a schema of its own.
+process.env["OPENCODE_DATABASE_URL"] =
+  process.env["OPENCODE_TEST_DATABASE_URL"] ?? "postgresql://postgres@127.0.0.1:5432/postgres"
+process.env["OPENCODE_DATABASE_EPHEMERAL"] = "1"
+delete process.env["OPENCODE_DATABASE_SCHEMA"]
 
 // Now safe to import from src/
 const { initProjectors } = await import("../src/server/projectors")
