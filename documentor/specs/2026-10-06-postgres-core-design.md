@@ -102,6 +102,25 @@ transaction first takes a transaction-scoped advisory lock. Within a scope
 this serialises writers exactly as SQLite did, including two processes that
 are wrongly running for the same scope.
 
+### Concurrency the swap exposes
+
+SQLite runs every query synchronously, so nothing else in the process can run
+between a read and the write that follows it. On Postgres every query yields.
+Two things in opencode depended on the old behaviour, and both are handled:
+
+- **A tool part has two writers**, the processor and the running tool, and each
+  reads the part and writes it back. A lock per processor holds each read and
+  write together.
+- **Effect `4.0.0-beta.83` corrupts a fiber's state** when the fiber wakes
+  another fiber that interrupts it synchronously and its cleanup then awaits
+  anything. With a database connection in play that leaks the connection. The
+  fork carries Effect's own fix, released in `4.0.0-beta.100`, as a dependency
+  patch.
+
+Upstream tests that read state the instant a call returns, before a background
+fiber has completed a database round trip, wait for that state instead. Each is
+listed in `documentor/upstream-test-exceptions.md`.
+
 ### 4. Isolation: one schema and one role per user scope
 
 The starter spec asks for shared tables with row-level security. This design
