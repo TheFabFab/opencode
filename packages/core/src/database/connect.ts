@@ -5,21 +5,7 @@ import * as PgClient from "@effect/sql-pg/PgClient"
 import * as EffectDrizzlePostgres from "drizzle-orm/effect-postgres"
 import { Effect, Layer, Redacted } from "effect"
 import type { Database } from "./database"
-
-/** Where a command connects: the URL with the schema folded in, and the schema's name. */
-export interface Target {
-  readonly url: string
-  readonly schema: string | undefined
-}
-
-function read(useSchema: boolean): Target {
-  const address = process.env.OPENCODE_DATABASE_URL
-  if (!address) throw new Error("OPENCODE_DATABASE_URL is not set")
-  const schema = useSchema ? process.env.OPENCODE_DATABASE_SCHEMA || undefined : undefined
-  const url = new URL(address)
-  if (schema) url.searchParams.set("options", `-c search_path=${schema}`)
-  return { url: url.toString(), schema }
-}
+import { DatabaseTarget } from "./target"
 
 /**
  * Runs `body` on one connection made from the environment, without the checks
@@ -30,11 +16,13 @@ function read(useSchema: boolean): Target {
  * uses the role's own search path.
  */
 export function run<A, E>(
-  body: (db: Database.Client, target: Target) => Effect.Effect<A, E, PgClient.PgClient>,
+  body: (db: Database.Client, target: DatabaseTarget.Target) => Effect.Effect<A, E, PgClient.PgClient>,
   options: { readonly schema: boolean } = { schema: true },
 ): Effect.Effect<A, E> {
   return Effect.suspend(() => {
-    const target = read(options.schema)
+    const target = DatabaseTarget.read(
+      options.schema ? process.env : { ...process.env, OPENCODE_DATABASE_SCHEMA: undefined },
+    )
     return Effect.flatMap(EffectDrizzlePostgres.makeWithDefaults(), (db) => body(db, target)).pipe(
       Effect.provide(PgClient.layer({ url: Redacted.make(target.url), maxConnections: 1 }).pipe(Layer.orDie)),
     )

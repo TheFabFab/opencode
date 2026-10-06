@@ -7,6 +7,7 @@ import { Context, Effect, Layer, Redacted } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
 import { DatabaseCollation } from "./collation"
 import { DatabaseMigration } from "./migration"
+import { DatabaseTarget } from "./target"
 
 const makeDatabase = EffectDrizzlePostgres.makeWithDefaults()
 
@@ -19,20 +20,9 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/storage/Database") {}
 
-/** Where the process connects, read from the environment when a layer is built. */
-function target() {
-  const address = process.env.OPENCODE_DATABASE_URL
-  if (!address) throw new Error("OPENCODE_DATABASE_URL is not set")
-  const ephemeral = process.env.OPENCODE_DATABASE_EPHEMERAL === "1"
-  const schema = ephemeral ? `t_${crypto.randomUUID().replaceAll("-", "")}` : process.env.OPENCODE_DATABASE_SCHEMA
-  const url = new URL(address)
-  if (schema) url.searchParams.set("options", `-c search_path=${schema}`)
-  return { url: url.toString(), schema, ephemeral }
-}
-
 const layer = Layer.unwrap(
   Effect.sync(() => {
-    const { url, schema, ephemeral } = target()
+    const { url, schema, ephemeral, maxConnections } = DatabaseTarget.read()
     return Layer.effect(
       Service,
       Effect.gen(function* () {
@@ -46,7 +36,7 @@ const layer = Layer.unwrap(
         yield* DatabaseMigration.verify(db)
         return { db }
       }).pipe(Effect.orDie),
-    ).pipe(Layer.provide(PgClient.layer({ url: Redacted.make(url), maxConnections: 4 }).pipe(Layer.orDie)))
+    ).pipe(Layer.provide(PgClient.layer({ url: Redacted.make(url), maxConnections }).pipe(Layer.orDie)))
   }),
 )
 
