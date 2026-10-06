@@ -309,6 +309,18 @@ const insertSession = (id: SessionV2.ID) =>
       .pipe(Effect.orDie)
   })
 
+/**
+ * Waits for the background runner to have made `count` provider requests.
+ * Waking a session only registers work; the request follows once the runner
+ * has read its input from the database. The wait uses real timers because
+ * these tests run on a virtual clock.
+ */
+const awaitRequests = (count: number) =>
+  Effect.promise(async () => {
+    for (let attempt = 0; attempt < 400 && requests.length < count; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+  })
+
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   response = []
@@ -623,6 +635,7 @@ describe("SessionRunnerLLM", () => {
 
       const message = yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Run automatically" }) })
 
+      yield* awaitRequests(1)
       expect(requests).toHaveLength(1)
       expect(yield* session.messages({ sessionID })).toMatchObject([
         { id: message.id, type: "user", text: "Run automatically" },
@@ -682,6 +695,7 @@ describe("SessionRunnerLLM", () => {
       systemUnavailable = false
       yield* session.prompt({ id: messageID, sessionID, prompt: Prompt.make({ text: "First" }) })
 
+      yield* awaitRequests(1)
       expect(requests).toHaveLength(1)
       expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user"])
     }),
@@ -2254,7 +2268,7 @@ describe("SessionRunnerLLM", () => {
       streamFailure = undefined
       streamGate = undefined
       streamStarted = undefined
-      yield* Effect.yieldNow
+      yield* awaitRequests(2)
 
       expect(requests).toHaveLength(2)
       expect(userTexts(requests[1]!)).toEqual(["Start working", "Recover with this"])
@@ -2433,7 +2447,7 @@ describe("SessionRunnerLLM", () => {
 
       requests.length = 0
       yield* (yield* SessionExecution.Service).wake(sessionID)
-      yield* Effect.yieldNow
+      yield* awaitRequests(1)
 
       expect(requests).toHaveLength(1)
       expect(userTexts(requests[0]!)).toEqual(["Wait in queue"])
@@ -2505,7 +2519,7 @@ describe("SessionRunnerLLM", () => {
       const first = yield* session.resume(sessionID).pipe(Effect.forkChild)
       yield* Deferred.await(streamStarted)
       const second = yield* session.resume(otherSessionID).pipe(Effect.forkChild)
-      yield* Effect.yieldNow
+      yield* awaitRequests(2)
 
       expect(requests).toHaveLength(2)
       expect(requests.map((request) => request.providerOptions?.openai?.promptCacheKey)).toEqual([
