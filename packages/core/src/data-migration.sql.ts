@@ -1,6 +1,7 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { pgTable, doublePrecision } from "drizzle-orm/pg-core"
+import { text } from "@opencode-ai/effect-drizzle-pg"
 
-export const DataMigrationTable = sqliteTable("data_migration", {
+export const DataMigrationTable = pgTable("data_migration", {
   name: text().primaryKey(),
-  time_completed: integer().notNull(),
+  time_completed: doublePrecision().notNull(),
 })

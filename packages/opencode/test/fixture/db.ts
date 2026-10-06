@@ -1,11 +1,6 @@
-import { rm } from "fs/promises"
-import { Database } from "@opencode-ai/core/database/database"
 import { disposeAllInstances } from "./fixture"
 
+/** Every database layer a test builds has a schema of its own, so disposing the instances is the whole reset. */
 export async function resetDatabase() {
   await disposeAllInstances().catch(() => undefined)
-  const dbPath = Database.path()
-  await rm(dbPath, { force: true }).catch(() => undefined)
-  await rm(`${dbPath}-wal`, { force: true }).catch(() => undefined)
-  await rm(`${dbPath}-shm`, { force: true }).catch(() => undefined)
 }
