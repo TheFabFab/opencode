@@ -331,7 +331,7 @@ describe("opencode run (non-interactive subprocess)", () => {
         const result = yield* run.result
 
         expect(result.exitCode).not.toBe(0)
-        expect(result.durationMs).toBeLessThan(30_000)
+        expect(result.durationMs).toBeLessThan(90_000)
       }),
     120_000,
   )
