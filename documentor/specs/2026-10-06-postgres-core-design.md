@@ -65,14 +65,15 @@ same change is a merge conflict in a file we own, which is the signal we want.
 | SQLite today | Postgres | Reason |
 | --- | --- | --- |
 | `integer` holding a millisecond timestamp | `double precision` | SQLite stores a fractional value in an integer column unchanged, and upstream relies on it: its pagination tests write `1000.5` as a message time. `double precision` holds every JS number exactly as SQLite did |
-| `integer` holding a count, a sequence number or an id | `bigint`, read as a JS number | A 32-bit `integer` is too small |
+| `integer` holding a count, a sequence number or an id | `bigint`, read as a JS number | A 32-bit `integer` is too small. A fraction is rounded and a non-finite number is refused, where SQLite stored either as given |
 | `text` in JSON mode (14 columns) | `jsonb` | The web tier reads these directly |
 | `integer` in boolean mode (2 columns) | `boolean` | |
 | `real` (session cost) | `double precision` | Postgres `real` is 4 bytes and would lose precision |
 | `text`, and the path column types | `text`, same custom types | |
 
-`jsonb` rejects the escaped NUL character (`\u0000`) inside strings, and tool
-output can contain it. The JSON column type replaces it with U+FFFD on write.
+Postgres rejects the NUL character in `text`, and its escaped form (`\u0000`)
+inside `jsonb` strings. Tool output can contain it. The text and JSON column
+types replace it with U+FFFD on write.
 
 ### Text ordering
 
@@ -162,10 +163,12 @@ possible later: it is a data move plus the key changes above.
   changed the schema.
 - Starting a server never changes a schema. It checks that the schema's applied
   migrations match what the binary expects and refuses to start otherwise.
-- A separate command applies migrations to one schema or to all of them, under
-  an advisory lock so two Jobs cannot run at once. It also creates a scope's
-  schema and role, and grants a user's `global` role read access to that
-  user's project schemas.
+- Separate commands do the schema work: `opencode db migrate` for one schema or,
+  with `--all`, every schema, under an advisory lock so two Jobs cannot run at
+  once; `opencode db provision` to create a scope's schema and role; and
+  `opencode db grant-read` to give a user's `global` role read access to that
+  user's project schemas. They run outside the application runtime, which
+  refuses an unmigrated schema.
 
 ### 6. Configuration
 
@@ -190,7 +193,7 @@ opens the `sqlite3` shell, are removed.
 | Migration tests | Unknown upstream migration fails the build; server refuses an unmigrated schema; two migration Jobs racing apply once |
 | Isolation test | A project role cannot read or write another schema; a `global` role can read its own user's project schemas, cannot write them, and cannot read another user's |
 | Writer test | Two connections appending to one session produce gap-free, ordered sequence numbers |
-| Compiled-binary test | The built binary creates no SQLite file and serves a scripted prompt from Postgres |
+| Compiled-binary test | The built binary, connected as a scope role, serves sessions from Postgres and creates no SQLite file. Prompts on Postgres are covered by upstream's subprocess tests, which run from source |
 
 CI adds a Postgres 18 service container, the current stable major and the one
 production will run. SQLite-specific upstream tests, such as
