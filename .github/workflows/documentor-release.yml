@@ -77,7 +77,8 @@ jobs:
           context="$(mktemp -d)"
           cp "${{ steps.binary.outputs.path }}" "$context/opencode"
           chmod 755 "$context/opencode"
-          printf 'FROM scratch\nCOPY opencode /opencode\n' > "$context/Dockerfile"
+          documentor/scripts/export-schema.sh "$context/opencode-schema"
+          printf 'FROM scratch\nCOPY opencode /opencode\nCOPY opencode-schema /opencode-schema\n' > "$context/Dockerfile"
           echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker build "$context" \
             --tag "$IMAGE:${GITHUB_REF_NAME#v}" \
