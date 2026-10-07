@@ -81,6 +81,15 @@ any schema that fails and exits non-zero if one did; it is safe to run twice
 and safe to run concurrently. `db migrate` without `--all` refuses to run when
 `OPENCODE_DATABASE_SCHEMA` is not set.
 
+The image also carries `/opencode-schema/`, for a caller that has no `opencode`
+binary: `baseline.sql` (the statements of `schema.gen.ts`), `baseline-ids.json`
+(`BASELINE_IDS`, the migration ids the baseline already contains),
+`ported/<id>.sql` (one file per key of `ported`), and `manifest.json` (the
+upstream `version` and every `migrationIds` entry). DocuMentor applies these
+with its own connection, so `opencode db migrate` and DocuMentor's provisioner
+must produce the same `migration` journal;
+`packages/core/test/pg/export.test.ts` holds them together.
+
 ## Rebasing onto a newer upstream tag
 
 1. Rebase. A conflict in one of the 11 table files means upstream changed the
