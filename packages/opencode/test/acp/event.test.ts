@@ -914,4 +914,76 @@ describe("documentor: acp update message meta", () => {
       opencode: { messageId: "msg_answer", parentId: "msg_parent" },
     })
   })
+
+  it("documentor: asks once for a message whose lookup fails, until the session goes idle", async () => {
+    const harness = createHarness()
+    const session = harness.sdk.session as unknown as { message: () => Promise<never> }
+    session.message = () => {
+      harness.calls.message++
+      return Promise.reject(new Error("unavailable"))
+    }
+    await createKnownSession(harness.session, "ses_fail", {
+      messageId: "msg_answer",
+      partId: "part_text",
+      partType: "text",
+    })
+
+    for (const delta of ["a", "b", "c", "d", "e"]) {
+      await harness.subscription.handle(textDelta("ses_fail", "msg_answer", "part_text", delta))
+    }
+
+    expect(harness.calls.message).toBe(1)
+    expect(harness.updates.map((update) => update.update._meta)).toEqual(
+      Array.from({ length: 5 }, () => ({ opencode: { messageId: "msg_answer", parentId: null } })),
+    )
+
+    await harness.subscription.handle(sessionIdle("ses_fail"))
+    await harness.subscription.handle(textDelta("ses_fail", "msg_answer", "part_text", "f"))
+
+    expect(harness.calls.message).toBe(2)
+  })
+
+  it("documentor: shares one lookup between concurrent updates of the same message", async () => {
+    const harness = createHarness()
+    const pending: Array<(value: { data: SessionMessageResponse }) => void> = []
+    const session = harness.sdk.session as unknown as { message: () => Promise<{ data: SessionMessageResponse }> }
+    session.message = () => {
+      harness.calls.message++
+      return new Promise((resolve) => pending.push(resolve))
+    }
+    await createKnownSession(harness.session, "ses_race", {
+      messageId: "msg_answer",
+      partId: "part_text",
+      partType: "text",
+    })
+
+    const first = harness.subscription.handle(textDelta("ses_race", "msg_answer", "part_text", "a"))
+    const second = harness.subscription.handle(textDelta("ses_race", "msg_answer", "part_text", "b"))
+    await pollUntil(() => pending.length > 0, "lookup did not start")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    for (const resolve of pending) resolve({ data: assistantMessage("ses_race", "msg_answer", "part_text", "text") })
+    await Promise.all([first, second])
+
+    expect(harness.calls.message).toBe(1)
+    expect(harness.updates.map((update) => update.update._meta)).toEqual([
+      { opencode: { messageId: "msg_answer", parentId: "msg_parent" } },
+      { opencode: { messageId: "msg_answer", parentId: "msg_parent" } },
+    ])
+  })
+
+  it("documentor: ignores message.updated for a session this connection does not track", async () => {
+    const harness = createHarness({ msg_answer: assistantMessage("ses_late", "msg_answer", "part_text", "text") })
+    await harness.subscription.handle(messageUpdated(assistantInfoWithParent("ses_late", "msg_answer", "msg_other")))
+    await createKnownSession(harness.session, "ses_late", {
+      messageId: "msg_answer",
+      partId: "part_text",
+      partType: "text",
+    })
+    await harness.subscription.handle(textDelta("ses_late", "msg_answer", "part_text", "hello"))
+
+    expect(harness.calls.message).toBe(1)
+    expect(harness.updates.at(-1)?.update._meta).toEqual({
+      opencode: { messageId: "msg_answer", parentId: "msg_parent" },
+    })
+  })
 })
