@@ -1054,6 +1054,12 @@ const layer = Layer.effect(
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
+      if (input.parts.length === 0 && input.noReply !== true && (yield* hasUserMessage(input.sessionID))) {
+        // A prompt with no parts resumes the session instead of storing an empty user message. The loop runs over
+        // the messages already stored, so user messages that arrived during a cancelled step are answered, and a
+        // session with nothing left to answer returns its last assistant without calling the model.
+        return yield* loop({ sessionID: input.sessionID })
+      }
       const message = yield* createUserMessage(input)
       yield* sessions.touch(input.sessionID)
 
@@ -1076,6 +1082,11 @@ const layer = Layer.effect(
       const msgs = yield* sessions.messages({ sessionID, limit: 1 }).pipe(Effect.orDie)
       if (msgs.length > 0) return msgs[0]
       throw new Error("Impossible")
+    })
+
+    const hasUserMessage = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const match = yield* sessions.findMessage(sessionID, (m) => m.info.role === "user").pipe(Effect.orDie)
+      return Option.isSome(match)
     })
 
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
