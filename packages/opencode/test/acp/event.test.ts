@@ -318,6 +318,35 @@ async function createKnownSession(
   )
 }
 
+function assistantInfoWithParent(sessionID: string, messageID: string, parentID: string) {
+  return {
+    id: messageID,
+    sessionID,
+    role: "assistant",
+    time: { created: Date.now() },
+    parentID,
+    modelID: "model",
+    providerID: "provider",
+    mode: "build",
+    agent: "build",
+    path: { cwd: "/workspace", root: "/workspace" },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  } satisfies Message
+}
+
+function messageUpdated(info: Message): Event {
+  return { id: `evt_${info.id}_updated`, type: "message.updated", properties: { sessionID: info.sessionID, info } }
+}
+
+function sessionIdle(sessionID: string): Event {
+  return {
+    id: `evt_${sessionID}_idle`,
+    type: "session.status",
+    properties: { sessionID, status: { type: "idle" } },
+  }
+}
+
 describe("acp event routing", () => {
   it("routes message.part.delta by sessionID without cross-session pollution", async () => {
     const harness = createHarness()
@@ -377,11 +406,13 @@ describe("acp event routing", () => {
         sessionUpdate: "agent_thought_chunk",
         messageId: "part_first",
         content: { type: "text", text: "First" },
+        _meta: { opencode: { messageId: "msg_reasoning", parentId: null } },
       },
       {
         sessionUpdate: "agent_thought_chunk",
         messageId: "part_second",
         content: { type: "text", text: "Second" },
+        _meta: { opencode: { messageId: "msg_reasoning", parentId: null } },
       },
     ])
   })
@@ -434,6 +465,7 @@ describe("acp event routing", () => {
   it("does not call sdk.session.message repeatedly when metadata is known", async () => {
     const harness = createHarness()
     await createKnownSession(harness.session, "ses_a", { messageId: "msg_a", partId: "part_a", partType: "text" })
+    await harness.subscription.handle(messageUpdated(assistantInfoWithParent("ses_a", "msg_a", "msg_parent")))
 
     for (const delta of ["a", "b", "c", "d", "e"]) {
       await harness.subscription.handle(textDelta("ses_a", "msg_a", "part_a", delta))
@@ -781,5 +813,105 @@ describe("acp event routing", () => {
         { type: "content", content: { type: "image", mimeType: "image/png", data: image } },
       ],
     ])
+  })
+})
+
+describe("documentor: acp update message meta", () => {
+  it("documentor: names the assistant message and the message it answers on text chunks", async () => {
+    const harness = createHarness()
+    await createKnownSession(harness.session, "ses_meta", {
+      messageId: "msg_answer",
+      partId: "part_text",
+      partType: "text",
+    })
+    await harness.subscription.handle(
+      messageUpdated(assistantInfoWithParent("ses_meta", "msg_answer", "msg_user_queued")),
+    )
+    await harness.subscription.handle(textDelta("ses_meta", "msg_answer", "part_text", "hello"))
+
+    expect(harness.updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg_answer",
+        content: { type: "text", text: "hello" },
+        _meta: { opencode: { messageId: "msg_answer", parentId: "msg_user_queued" } },
+      },
+    ])
+    expect(harness.calls.message).toBe(0)
+  })
+
+  it("documentor: names the assistant message, not the reasoning part, on thought chunks", async () => {
+    const harness = createHarness()
+    await createKnownSession(harness.session, "ses_meta", {
+      messageId: "msg_answer",
+      partId: "part_thought",
+      partType: "reasoning",
+    })
+    await harness.subscription.handle(
+      messageUpdated(assistantInfoWithParent("ses_meta", "msg_answer", "msg_user_queued")),
+    )
+    await harness.subscription.handle(textDelta("ses_meta", "msg_answer", "part_thought", "thinking"))
+
+    expect(harness.updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "agent_thought_chunk",
+        messageId: "part_thought",
+        content: { type: "text", text: "thinking" },
+        _meta: { opencode: { messageId: "msg_answer", parentId: "msg_user_queued" } },
+      },
+    ])
+  })
+
+  it("documentor: names the message on every tool update", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_tool_meta", cwd: "/workspace" }))
+    await harness.subscription.handle(
+      messageUpdated(assistantInfoWithParent("ses_tool_meta", "msg_call_1", "msg_user_queued")),
+    )
+    await harness.subscription.handle(toolUpdated(runningTool("ses_tool_meta", "call_1", "hello")))
+    await harness.subscription.handle(toolUpdated(completedTool("ses_tool_meta", "call_1")))
+
+    const meta = { opencode: { messageId: "msg_call_1", parentId: "msg_user_queued" } }
+    expect(toolUpdates(harness.updates).map((item) => [item.update.sessionUpdate, item.update._meta])).toEqual([
+      ["tool_call", meta],
+      ["tool_call_update", meta],
+      ["tool_call_update", meta],
+    ])
+    expect(harness.calls.message).toBe(0)
+  })
+
+  it("documentor: fetches the parent once when message.updated was missed", async () => {
+    const harness = createHarness({ msg_call_2: assistantToolMessage(completedTool("ses_fetch", "call_2")) })
+    await Effect.runPromise(harness.session.create({ id: "ses_fetch", cwd: "/workspace" }))
+    await harness.subscription.handle(toolUpdated(runningTool("ses_fetch", "call_2", "x")))
+    await harness.subscription.handle(toolUpdated(completedTool("ses_fetch", "call_2")))
+
+    const parents = toolUpdates(harness.updates).map((item) => item.update._meta)
+    expect(parents).toEqual([
+      { opencode: { messageId: "msg_call_2", parentId: "msg_parent" } },
+      { opencode: { messageId: "msg_call_2", parentId: "msg_parent" } },
+      { opencode: { messageId: "msg_call_2", parentId: "msg_parent" } },
+    ])
+    expect(harness.calls.message).toBe(1)
+  })
+
+  it("documentor: forgets parents at idle and fetches them again", async () => {
+    const harness = createHarness({ msg_answer: assistantMessage("ses_idle", "msg_answer", "part_text", "text") })
+    await createKnownSession(harness.session, "ses_idle", {
+      messageId: "msg_answer",
+      partId: "part_text",
+      partType: "text",
+    })
+    await harness.subscription.handle(messageUpdated(assistantInfoWithParent("ses_idle", "msg_answer", "msg_parent")))
+    await harness.subscription.handle(textDelta("ses_idle", "msg_answer", "part_text", "before"))
+    expect(harness.calls.message).toBe(0)
+
+    await harness.subscription.handle(sessionIdle("ses_idle"))
+    await harness.subscription.handle(textDelta("ses_idle", "msg_answer", "part_text", "after"))
+
+    expect(harness.calls.message).toBe(1)
+    expect(harness.updates.at(-1)?.update._meta).toEqual({
+      opencode: { messageId: "msg_answer", parentId: "msg_parent" },
+    })
   })
 })

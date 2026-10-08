@@ -3,6 +3,7 @@ import type {
   Event,
   EventMessagePartDelta,
   EventMessagePartUpdated,
+  Message,
   OpencodeClient,
   Part,
   SessionMessageResponse,
@@ -30,6 +31,14 @@ type GlobalEventStream = {
   stream: AsyncIterable<GlobalEventEnvelope>
 }
 
+/**
+ * `_meta.opencode` on every content and tool update: the assistant message the
+ * update belongs to, and the user message that assistant answers. A client that
+ * sends a prompt while a turn runs reads from it the moment the agent starts
+ * answering that prompt.
+ */
+export type OpencodeUpdateMeta = { opencode: { messageId: string; parentId: string | null } }
+
 export function start(input: { sdk: OpencodeClient; connection: Connection; session: ACPSession.Interface }) {
   const subscription = new Subscription(input)
   subscription.start()
@@ -42,6 +51,9 @@ export class Subscription {
   private readonly toolStarts = new Set<string>()
   private readonly connectionWaiters = new Set<() => void>()
   private readonly idleWaiters = new Map<string, Set<ReturnType<typeof signal>>>()
+  // Per session: message id → that message's parentID (null for a user message). Filled from message.updated,
+  // which opencode publishes before any part of the message, and forgotten when the session goes idle.
+  private readonly messageParents = new Map<string, Map<string, string | null>>()
   private readonly permission: ACPPermission.Handler
   private connected = false
   private started = false
@@ -95,6 +107,9 @@ export class Subscription {
       case "session.status":
         if (event.properties.status.type === "idle") this.idle(event.properties.sessionID)
         return
+      case "message.updated":
+        this.recordMessage(event.properties.info)
+        return
       case "permission.asked":
         this.permission.handle(event)
         return
@@ -107,6 +122,7 @@ export class Subscription {
 
   async replayMessage(message: SessionMessageResponse) {
     if (message.info.role !== "assistant" && message.info.role !== "user") return
+    this.recordMessage(message.info)
 
     const cwd = message.info.role === "assistant" ? message.info.path?.cwd : undefined
     for (const part of message.parts) {
@@ -136,6 +152,16 @@ export class Subscription {
           sessionUpdate,
           messageId: part.type === "reasoning" ? part.id : message.info.id,
           ...chunk,
+          ...(sessionUpdate === "user_message_chunk"
+            ? {}
+            : {
+                _meta: {
+                  opencode: {
+                    messageId: message.info.id,
+                    parentId: message.info.role === "assistant" ? (message.info.parentID ?? null) : null,
+                  },
+                } satisfies OpencodeUpdateMeta,
+              }),
         },
       })
     }
@@ -182,10 +208,38 @@ export class Subscription {
   }
 
   private idle(sessionId: string) {
+    this.messageParents.delete(sessionId)
     const waiters = this.idleWaiters.get(sessionId)
     if (!waiters) return
     this.idleWaiters.delete(sessionId)
     for (const waiter of waiters) waiter.resolve()
+  }
+
+  private recordMessage(info: Message) {
+    const parents = this.messageParents.get(info.sessionID) ?? new Map<string, string | null>()
+    parents.set(info.id, info.role === "assistant" ? (info.parentID ?? null) : null)
+    this.messageParents.set(info.sessionID, parents)
+  }
+
+  private async messageMeta(sessionId: string, cwd: string, messageId: string): Promise<OpencodeUpdateMeta> {
+    const known = this.messageParents.get(sessionId)?.get(messageId)
+    if (known !== undefined) return { opencode: { messageId, parentId: known } }
+    // The subscription misses message.updated when it connects mid-turn or after the session went idle. Asking
+    // the server costs one request per message; a failed lookup is not cached, so the next update asks again.
+    const message = await Promise.resolve()
+      .then(() =>
+        this.input.sdk.session.message(
+          { sessionID: sessionId, messageID: messageId, directory: cwd },
+          { throwOnError: true },
+        ),
+      )
+      .then((response) => response.data)
+      .catch(() => undefined)
+    if (!message) return { opencode: { messageId, parentId: null } }
+    this.recordMessage(message.info)
+    return {
+      opencode: { messageId, parentId: message.info.role === "assistant" ? (message.info.parentID ?? null) : null },
+    }
   }
 
   private async handlePartUpdated(event: EventMessagePartUpdated) {
@@ -238,6 +292,7 @@ export class Subscription {
             type: "text",
             text: props.delta,
           },
+          _meta: await this.messageMeta(session.id, session.cwd, props.messageID),
         },
       })
       return
@@ -253,6 +308,7 @@ export class Subscription {
             type: "text",
             text: props.delta,
           },
+          _meta: await this.messageMeta(session.id, session.cwd, props.messageID),
         },
       })
     }
@@ -271,6 +327,7 @@ export class Subscription {
       .then((response) => response.data)
       .catch(() => undefined)
     if (!message) return
+    this.recordMessage(message.info)
 
     const part = message.parts.find((item) => item.id === partId)
     if (!part) return
@@ -293,7 +350,8 @@ export class Subscription {
   }
 
   private async handleToolPart(sessionId: string, part: ToolPart, cwd: string) {
-    await this.toolStart(sessionId, part, cwd)
+    const meta = await this.messageMeta(sessionId, cwd, part.messageID)
+    await this.toolStart(sessionId, part, cwd, meta)
 
     switch (part.state.status) {
       case "pending":
@@ -301,7 +359,7 @@ export class Subscription {
         return
 
       case "running":
-        await this.runningTool(sessionId, part, cwd)
+        await this.runningTool(sessionId, part, cwd, meta)
         return
 
       case "completed":
@@ -316,6 +374,7 @@ export class Subscription {
               state: part.state,
               cwd,
             }),
+            _meta: meta,
           },
         })
         return
@@ -332,13 +391,14 @@ export class Subscription {
               state: part.state,
               cwd,
             }),
+            _meta: meta,
           },
         })
         return
     }
   }
 
-  private async runningTool(sessionId: string, part: ToolPart, cwd: string) {
+  private async runningTool(sessionId: string, part: ToolPart, cwd: string, meta: OpencodeUpdateMeta) {
     if (part.state.status !== "running") return
 
     const output = part.tool === "bash" ? shellOutputSnapshot(part.state) : undefined
@@ -354,6 +414,7 @@ export class Subscription {
               state: part.state,
               cwd,
             }),
+            _meta: meta,
           },
         })
         return
@@ -372,11 +433,12 @@ export class Subscription {
           output,
           cwd,
         }),
+        _meta: meta,
       },
     })
   }
 
-  private async toolStart(sessionId: string, part: ToolPart, cwd: string) {
+  private async toolStart(sessionId: string, part: ToolPart, cwd: string, meta: OpencodeUpdateMeta) {
     if (this.toolStarts.has(part.callID)) return
     this.toolStarts.add(part.callID)
     await this.input.connection.sessionUpdate({
@@ -389,6 +451,7 @@ export class Subscription {
           state: part.state,
           cwd,
         }),
+        _meta: meta,
       },
     })
   }
