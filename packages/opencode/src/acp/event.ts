@@ -51,9 +51,10 @@ export class Subscription {
   private readonly toolStarts = new Set<string>()
   private readonly connectionWaiters = new Set<() => void>()
   private readonly idleWaiters = new Map<string, Set<ReturnType<typeof signal>>>()
-  // Per session: message id → that message's parentID (null for a user message). Filled from message.updated,
-  // which opencode publishes before any part of the message, and forgotten when the session goes idle.
-  private readonly messageParents = new Map<string, Map<string, string | null>>()
+  // Per tracked session: assistant message id → its parentID. Filled from message.updated, which opencode publishes
+  // before any part of the message, or by one lookup on a miss; a failed lookup holds null. Forgotten when the
+  // session goes idle and when the event stream disconnects.
+  private readonly messageParents = new Map<string, Map<string, Promise<string | null>>>()
   private readonly permission: ACPPermission.Handler
   private connected = false
   private started = false
@@ -108,8 +109,7 @@ export class Subscription {
         if (event.properties.status.type === "idle") this.idle(event.properties.sessionID)
         return
       case "message.updated":
-        this.recordMessage(event.properties.info)
-        return
+        return this.handleMessageUpdated(event.properties.info)
       case "permission.asked":
         this.permission.handle(event)
         return
@@ -198,6 +198,7 @@ export class Subscription {
   }
 
   private disconnected() {
+    this.messageParents.clear()
     if (!this.connected) return
     this.connected = false
     const error = new Error("ACP event stream disconnected")
@@ -215,31 +216,47 @@ export class Subscription {
     for (const waiter of waiters) waiter.resolve()
   }
 
+  private async handleMessageUpdated(info: Message) {
+    const session = await Effect.runPromise(this.input.session.tryGet(info.sessionID))
+    if (!session) return
+    this.recordMessage(info)
+  }
+
+  // Only assistant messages: updates name the assistant message they belong to, never a user message.
   private recordMessage(info: Message) {
-    const parents = this.messageParents.get(info.sessionID) ?? new Map<string, string | null>()
-    parents.set(info.id, info.role === "assistant" ? (info.parentID ?? null) : null)
-    this.messageParents.set(info.sessionID, parents)
+    if (info.role !== "assistant") return
+    this.sessionParents(info.sessionID).set(info.id, Promise.resolve(info.parentID ?? null))
+  }
+
+  private sessionParents(sessionId: string) {
+    const existing = this.messageParents.get(sessionId)
+    if (existing) return existing
+    const parents = new Map<string, Promise<string | null>>()
+    this.messageParents.set(sessionId, parents)
+    return parents
   }
 
   private async messageMeta(sessionId: string, cwd: string, messageId: string): Promise<OpencodeUpdateMeta> {
-    const known = this.messageParents.get(sessionId)?.get(messageId)
-    if (known !== undefined) return { opencode: { messageId, parentId: known } }
-    // The subscription misses message.updated when it connects mid-turn or after the session went idle. Asking
-    // the server costs one request per message; a failed lookup is not cached, so the next update asks again.
-    const message = await Promise.resolve()
+    const parents = this.sessionParents(sessionId)
+    const known = parents.get(messageId)
+    if (known) return { opencode: { messageId, parentId: await known } }
+    // The subscription misses message.updated when it connects mid-turn or after the session went idle. One lookup
+    // per message answers every update for it, concurrent ones included. A failed lookup is remembered as null until
+    // the session goes idle, so a server that cannot answer is not asked again for each chunk of the stream.
+    const lookup = Promise.resolve()
       .then(() =>
         this.input.sdk.session.message(
           { sessionID: sessionId, messageID: messageId, directory: cwd },
           { throwOnError: true },
         ),
       )
-      .then((response) => response.data)
-      .catch(() => undefined)
-    if (!message) return { opencode: { messageId, parentId: null } }
-    this.recordMessage(message.info)
-    return {
-      opencode: { messageId, parentId: message.info.role === "assistant" ? (message.info.parentID ?? null) : null },
-    }
+      .then((response) => {
+        const info = response.data?.info
+        return info?.role === "assistant" ? (info.parentID ?? null) : null
+      })
+      .catch(() => null)
+    parents.set(messageId, lookup)
+    return { opencode: { messageId, parentId: await lookup } }
   }
 
   private async handlePartUpdated(event: EventMessagePartUpdated) {
