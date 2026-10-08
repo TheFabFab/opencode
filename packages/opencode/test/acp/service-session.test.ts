@@ -571,6 +571,7 @@ describe("ACP service sessions", () => {
         sessionUpdate: "agent_message_chunk",
         messageId: "msg_assistant",
         content: { type: "text", text: "hi there" },
+        _meta: { opencode: { messageId: "msg_assistant", parentId: null } },
       },
     ])
   })
@@ -607,13 +608,38 @@ describe("ACP service sessions", () => {
         sessionUpdate: "agent_thought_chunk",
         messageId: "part_first",
         content: { type: "text", text: "First" },
+        _meta: { opencode: { messageId: "msg_assistant", parentId: null } },
       },
       {
         sessionUpdate: "agent_thought_chunk",
         messageId: "part_second",
         content: { type: "text", text: "Second" },
+        _meta: { opencode: { messageId: "msg_assistant", parentId: null } },
       },
     ])
+  })
+
+  it("documentor: replays each assistant chunk with its message and parent", async () => {
+    const { service, updates } = makeService([
+      {
+        info: { id: "msg_user", sessionID: "ses_loaded", role: "user" },
+        parts: [{ id: "part_user", sessionID: "ses_loaded", messageID: "msg_user", type: "text", text: "hello" }],
+      },
+      {
+        info: { id: "msg_assistant", sessionID: "ses_loaded", role: "assistant", parentID: "msg_user" },
+        parts: [
+          { id: "part_assistant", sessionID: "ses_loaded", messageID: "msg_assistant", type: "text", text: "hi there" },
+        ],
+      },
+    ])
+
+    await Effect.runPromise(service.loadSession({ cwd: "/workspace", sessionId: "ses_loaded", mcpServers: [] }))
+
+    const replayed = updates.map((item) => item.update)
+    expect(replayed.find((item) => item.sessionUpdate === "user_message_chunk")).not.toHaveProperty("_meta")
+    expect(replayed.find((item) => item.sessionUpdate === "agent_message_chunk")).toMatchObject({
+      _meta: { opencode: { messageId: "msg_assistant", parentId: "msg_user" } },
+    })
   })
 
   it("lists sessions sorted by updated time with cursor support", async () => {
