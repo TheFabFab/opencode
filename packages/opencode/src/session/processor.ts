@@ -333,12 +333,15 @@ const layer = Layer.effect(
             yield* ensureToolCall(value)
             return
 
+          // A call already in ctx.toolcalls has its part from tool-input-start, and
+          // neither event writes to it. Reading it back for each delta costs one
+          // database round trip per streamed chunk: thousands for a large edit.
           case "tool-input-delta":
-            yield* ensureToolCall(value)
+            if (!(value.id in ctx.toolcalls)) yield* ensureToolCall(value)
             return
 
           case "tool-input-end": {
-            yield* ensureToolCall(value)
+            if (!(value.id in ctx.toolcalls)) yield* ensureToolCall(value)
             return
           }
 
