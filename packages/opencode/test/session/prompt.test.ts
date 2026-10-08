@@ -1496,6 +1496,94 @@ it.instance("prompt submitted during an active run is included in the next LLM i
   }),
 )
 
+it.instance("documentor: an empty prompt saves no message and answers the newest user message", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    // An interrupted step: the assistant has no finish, as a cancel leaves it.
+    const seeded = yield* seed(chat.id)
+    const queued = yield* user(chat.id, "queued during the cancelled step")
+    yield* llm.text("answer to the queued message")
+
+    const result = yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [] })
+
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    expect(msgs.filter((msg) => msg.info.role === "user").map((msg) => msg.info.id)).toEqual([
+      seeded.user.id,
+      queued.id,
+    ])
+    if (result.info.role !== "assistant") throw new Error("expected an assistant message")
+    expect(result.info.parentID).toBe(queued.id)
+    expect(yield* llm.calls).toBe(1)
+  }),
+)
+
+it.instance("documentor: an empty prompt with nothing to answer calls no model", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id, { finish: "stop" })
+    // Queued so a regression returns instead of waiting on the server.
+    yield* llm.text("should not be requested")
+
+    const result = yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [] })
+
+    expect(result.info.id).toBe(seeded.assistant.id)
+    expect(yield* llm.hits).toHaveLength(0)
+    expect(yield* sessions.messages({ sessionID: chat.id })).toHaveLength(2)
+  }),
+)
+
+it.instance("documentor: an empty prompt on a fresh session keeps upstream behaviour", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("first reply")
+
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [] })
+
+    const users = (yield* sessions.messages({ sessionID: chat.id })).filter((msg) => msg.info.role === "user")
+    expect(users).toHaveLength(1)
+    expect(users[0]?.parts).toHaveLength(0)
+    expect(yield* llm.calls).toBe(1)
+  }),
+)
+
+it.instance("documentor: an empty prompt while a loop runs joins that loop", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.hold("first", deferredAsPromise(gate))
+
+    const a = yield* prompt
+      .prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [{ type: "text", text: "first" }] })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    const b = yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [] }).pipe(Effect.forkChild)
+    yield* Deferred.succeed(gate, void 0)
+
+    const [ea, eb] = yield* Effect.all([Fiber.await(a), Fiber.await(b)])
+    expect(Exit.isSuccess(ea)).toBe(true)
+    expect(Exit.isSuccess(eb)).toBe(true)
+    expect(yield* llm.calls).toBe(1)
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    expect(msgs.filter((msg) => msg.info.role === "user")).toHaveLength(1)
+    expect(msgs.filter((msg) => msg.info.role === "assistant")).toHaveLength(1)
+  }),
+)
+
 it.instance("assertNotBusy fails with BusyError when loop running", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
