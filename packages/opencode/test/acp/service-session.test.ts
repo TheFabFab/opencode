@@ -1350,6 +1350,40 @@ describe("ACP service sessions", () => {
     expect(usageUpdates).toEqual([session.sessionId])
   })
 
+  it("documentor: uses a client message id with the msg prefix as the durable user message id", async () => {
+    const { service, prompts } = makeService()
+    const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+
+    const result = await Effect.runPromise(
+      service.prompt({
+        sessionId: session.sessionId,
+        messageId: "msg_user_ses_a_1700000000000_x1",
+        prompt: [{ type: "text", text: "hello" }],
+      }),
+    )
+
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toMatchObject({
+      sessionID: session.sessionId,
+      messageID: "msg_user_ses_a_1700000000000_x1",
+      parts: [{ type: "text", text: "hello" }],
+    })
+    expect(result.userMessageId).toBe("msg_user_ses_a_1700000000000_x1")
+  })
+
+  it("documentor: names no message when an empty prompt carries a message id", async () => {
+    const { service, prompts } = makeService()
+    const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+
+    await Effect.runPromise(
+      service.prompt({ sessionId: session.sessionId, messageId: "msg_user_ses_a_1700000000000_x2", prompt: [] }),
+    )
+
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toMatchObject({ parts: [] })
+    expect(prompts[0]).not.toHaveProperty("messageID")
+  })
+
   it("waits for queued session updates before returning end_turn", async () => {
     const called = deferred<void>()
     const response = deferred<{ data: { info: ReturnType<typeof assistantInfo> } }>()

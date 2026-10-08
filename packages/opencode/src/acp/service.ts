@@ -517,6 +517,7 @@ export function make(input: {
       const modeId = current.modeId ?? (snapshot.availableModes.length > 0 ? snapshot.defaultModeID : undefined)
       const parts = promptContentToParts(params.prompt)
       const command = detectSlashCommand(parts)
+      const messageID = parts.length > 0 ? opencodeMessageID(params.messageId) : undefined
 
       if (!command) {
         const response = yield* request(
@@ -525,6 +526,7 @@ export function make(input: {
               input.sdk.session.prompt(
                 {
                   sessionID: current.id,
+                  ...(messageID ? { messageID } : {}),
                   model: {
                     providerID: selected.providerID,
                     modelID: selected.modelID,
@@ -551,6 +553,7 @@ export function make(input: {
               input.sdk.session.command(
                 {
                   sessionID: current.id,
+                  ...(messageID ? { messageID } : {}),
                   command: known.name,
                   arguments: command.args,
                   model: `${selected.providerID}/${selected.modelID}`,
@@ -834,6 +837,13 @@ function detectSlashCommand(parts: ReturnType<typeof promptContentToParts>) {
   const [name, ...rest] = text.slice(1).split(/\s+/)
   if (!name) return
   return { name, args: rest.join(" ").trim() }
+}
+
+// A client may name the user message its prompt creates, so that its own copy and opencode's share one id.
+// Only an id that is already an opencode message id (prefix "msg") is used; ACP clients that send UUIDs get an
+// opencode-minted id. An empty prompt creates no message (SessionPrompt.prompt), so it names none.
+function opencodeMessageID(messageId: string | null | undefined) {
+  return typeof messageId === "string" && messageId.startsWith("msg") ? messageId : undefined
 }
 
 const promptResponse = Effect.fn("ACP.promptResponse")(function* (
