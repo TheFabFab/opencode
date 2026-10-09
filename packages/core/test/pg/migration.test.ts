@@ -185,7 +185,10 @@ describe("migration lifecycle", () => {
           expect(done).toContain(first)
           expect(done).toContain(second)
           expect(done).not.toContain(empty)
-          expect(failed).toEqual([])
+          // The test database is shared with every package's tests, whose
+          // throwaway schemas are created and dropped while this scan runs; one
+          // dropped mid-scan fails there, so only this test's schemas are asserted.
+          expect(failed.filter((entry) => [first, second, empty].includes(entry.schema))).toEqual([])
           for (const name of [first, second])
             expect(yield* db.all(sql.raw(`select id from "${name}".marker`))).toEqual([])
           expect(yield* db.all(sql`select 1 from information_schema.tables where table_schema = ${empty}`)).toEqual([])
