@@ -990,6 +990,64 @@ describe("ACP service sessions", () => {
     expect(result.configOptions?.find((option) => option.id === "model")?.currentValue).toBe("test/configured-model")
   })
 
+  function sessionIdSdk(creates: Array<{ id?: string }>) {
+    return {
+      config: {
+        providers: () => Promise.resolve({ data: { providers: [provider], default: { test: modelID } } }),
+        get: () => Promise.resolve({ data: {} }),
+      },
+      app: {
+        agents: () => Promise.resolve({ data: [{ name: "build", mode: "primary", permission: [], options: {} }] }),
+        skills: () => Promise.resolve({ data: [] }),
+      },
+      command: {
+        list: () => Promise.resolve({ data: [] }),
+      },
+      session: {
+        create: (input: { id?: string }) => {
+          creates.push(input)
+          return Promise.resolve({ data: { id: input.id ?? "ses_minted" } })
+        },
+        list: () => Promise.resolve({ data: [] }),
+      },
+      mcp: {
+        add: () => Promise.resolve({ data: {} }),
+      },
+    } as unknown as OpencodeClient
+  }
+
+  it("documentor: creates the session under the id named in _meta.opencode.sessionId", async () => {
+    const creates: Array<{ id?: string }> = []
+    const service = ACPService.make({ sdk: sessionIdSdk(creates) })
+
+    const result = await Effect.runPromise(
+      service.newSession({
+        cwd: "/workspace",
+        mcpServers: [],
+        _meta: { opencode: { sessionId: "ses_fe0123456789ClientChosen1" } },
+      }),
+    )
+
+    expect(creates[0]?.id).toBe("ses_fe0123456789ClientChosen1")
+    expect(result.sessionId).toBe("ses_fe0123456789ClientChosen1")
+  })
+
+  it("documentor: lets opencode mint the session id when _meta names none or one without the ses prefix", async () => {
+    const creates: Array<{ id?: string }> = []
+    const service = ACPService.make({ sdk: sessionIdSdk(creates) })
+
+    await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+    await Effect.runPromise(
+      service.newSession({
+        cwd: "/workspace",
+        mcpServers: [],
+        _meta: { opencode: { sessionId: "00000000-0000-4000-8000-000000000001" } },
+      }),
+    )
+
+    expect(creates.map((input) => input.id)).toEqual([undefined, undefined])
+  })
+
   it("does not scan last-used sessions when resolving the new session default", async () => {
     const historyCalls: string[] = []
     const sdk = {
