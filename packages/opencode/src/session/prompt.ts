@@ -1043,8 +1043,7 @@ const layer = Layer.effect(
         })
       }
 
-      yield* sessions.updateMessage(info)
-      for (const part of parts) yield* sessions.updatePart(part)
+      yield* sessions.saveMessage(info, parts)
 
       return { info, parts }
     }, Effect.scoped)

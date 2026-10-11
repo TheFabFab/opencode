@@ -283,3 +283,88 @@ describe("Session", () => {
     }),
   )
 })
+
+describe("documentor: caller-chosen session id", () => {
+  it.instance("creates the session under the id the caller names", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const id = "ses_fe0123456789CallerChosen1" as SessionID
+
+      const info = yield* session.create({ id })
+
+      expect(info.id).toBe(id)
+      expect((yield* session.get(id)).id).toBe(id)
+      yield* session.remove(id)
+    }),
+  )
+
+  it.instance("refuses an id that names an existing session and leaves that session as it was", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const existing = yield* session.create({ title: "kept" })
+
+      const exit = yield* session.create({ id: existing.id, title: "replacement" }).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect((yield* session.get(existing.id)).title).toBe("kept")
+      yield* session.remove(existing.id)
+    }),
+  )
+})
+
+describe("documentor: a message and its parts are saved together", () => {
+  const userMessage = (sessionID: SessionID, id: MessageID) =>
+    ({
+      id,
+      sessionID,
+      role: "user",
+      time: { created: Date.now() },
+      agent: "user",
+      model: { providerID: "test", modelID: "test" },
+      tools: {},
+      mode: "",
+    }) as unknown as SessionV1.Info
+
+  const textPart = (sessionID: SessionID, messageID: MessageID, text: string) =>
+    ({ id: PartID.ascending(), messageID, sessionID, type: "text", text }) as SessionV1.Part
+
+  it.instance("stores the message with every part", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const info = yield* session.create({})
+      const messageID = MessageID.ascending()
+
+      yield* session.saveMessage(userMessage(info.id, messageID), [
+        textPart(info.id, messageID, "<system-message>context</system-message>"),
+        textPart(info.id, messageID, "Find me my passport"),
+      ])
+
+      const [stored] = yield* session.messages({ sessionID: info.id })
+      expect(stored?.info.id).toBe(messageID)
+      expect(stored?.parts.map((part) => (part as SessionV1.TextPart).text)).toEqual([
+        "<system-message>context</system-message>",
+        "Find me my passport",
+      ])
+      yield* session.remove(info.id)
+    }),
+  )
+
+  it.instance("stores none of it when a part cannot be stored", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const info = yield* session.create({})
+      const messageID = MessageID.ascending()
+
+      const exit = yield* session
+        .saveMessage(userMessage(info.id, messageID), [
+          textPart(info.id, messageID, "<system-message>context</system-message>"),
+          textPart(info.id, MessageID.ascending(), "a part of a message that does not exist"),
+        ])
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(yield* session.messages({ sessionID: info.id })).toEqual([])
+      yield* session.remove(info.id)
+    }),
+  )
+})
