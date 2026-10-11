@@ -259,6 +259,7 @@ export type GlobalInfo = Types.DeepMutable<Schema.Schema.Type<typeof GlobalInfo>
 
 export const CreateInput = Schema.optional(
   Schema.Struct({
+    id: Schema.optional(SessionID),
     parentID: Schema.optional(SessionID),
     title: Schema.optional(Schema.String),
     agent: Schema.optional(Schema.String),
@@ -414,6 +415,7 @@ export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
   readonly listGlobal: (input?: GlobalListInput) => Effect.Effect<GlobalInfo[]>
   readonly create: (input?: {
+    id?: SessionID
     parentID?: SessionID
     title?: string
     agent?: string
@@ -457,6 +459,7 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  readonly saveMessage: <T extends SessionV1.Info>(msg: T, parts: readonly SessionV1.Part[]) => Effect.Effect<T>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -642,6 +645,19 @@ const layer: Layer.Layer<
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
 
+    // A message and its parts are published in one transaction, so their rows commit together. A reader between
+    // the message row and its last part would otherwise see a user message without its text.
+    const saveMessage = <T extends SessionV1.Info>(msg: T, parts: readonly SessionV1.Part[]): Effect.Effect<T> =>
+      db
+        .transaction(() =>
+          Effect.gen(function* () {
+            yield* updateMessage(msg)
+            for (const part of parts) yield* updatePart(part)
+            return msg
+          }),
+        )
+        .pipe(Effect.orDie, Effect.withSpan("Session.saveMessage"))
+
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
       const row = yield* db
         .select()
@@ -665,6 +681,7 @@ const layer: Layer.Layer<
     })
 
     const create = Effect.fn("Session.create")(function* (input?: {
+      id?: SessionID
       parentID?: SessionID
       title?: string
       agent?: string
@@ -675,7 +692,14 @@ const layer: Layer.Layer<
     }) {
       const ctx = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
+      // A caller-chosen id names a new session, never an existing one. The projector refuses a duplicate row as
+      // well; checking first turns that into an error that names the id instead of a failed projection.
+      if (input?.id !== undefined) {
+        const existing = yield* get(input.id).pipe(Effect.option)
+        if (existing._tag === "Some") return yield* Effect.die(new Error(`Session already exists: ${input.id}`))
+      }
       return yield* createNext({
+        id: input?.id,
         parentID: input?.parentID,
         directory: ctx.directory,
         path: sessionPath(ctx.worktree, ctx.directory),
@@ -933,6 +957,7 @@ const layer: Layer.Layer<
       removeMessage,
       removePart,
       updatePart,
+      saveMessage,
       getPart,
       updatePartDelta,
       findMessage,

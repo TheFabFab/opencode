@@ -162,6 +162,7 @@ export function make(input: {
 
   const newSession = Effect.fn("ACP.newSession")(function* (params: NewSessionRequest) {
     const started = performance.now()
+    const requestedSessionID = sessionIdFromMeta(params._meta)
     const snapshot = yield* directorySnapshot(params.cwd)
     const selected = selectDefaultModel(snapshot)
     const variant = selectVariant(snapshot, selected)
@@ -172,6 +173,7 @@ export function make(input: {
         input.sdk.session.create(
           {
             directory: params.cwd,
+            ...(requestedSessionID ? { id: requestedSessionID } : {}),
             ...(modeId ? { agent: modeId } : {}),
             model: {
               providerID: selected.providerID,
@@ -837,6 +839,17 @@ function detectSlashCommand(parts: ReturnType<typeof promptContentToParts>) {
   const [name, ...rest] = text.slice(1).split(/\s+/)
   if (!name) return
   return { name, args: rest.join(" ").trim() }
+}
+
+// A client may name the session it creates in `_meta.opencode.sessionId`, so that the chat it shows before
+// opencode answers and the session opencode stores share one id. Only an id with the "ses" prefix is used; anything
+// else gets an opencode-minted id.
+function sessionIdFromMeta(meta: unknown) {
+  if (typeof meta !== "object" || meta === null) return undefined
+  const opencode = (meta as { opencode?: unknown }).opencode
+  if (typeof opencode !== "object" || opencode === null) return undefined
+  const sessionId = (opencode as { sessionId?: unknown }).sessionId
+  return typeof sessionId === "string" && sessionId.startsWith("ses") ? sessionId : undefined
 }
 
 // A client may name the user message its prompt creates, so that its own copy and opencode's share one id.
