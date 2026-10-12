@@ -208,7 +208,7 @@ describe("ACP service sessions", () => {
           model?: { id: string; providerID: string; variant?: string }
         }
       }>
-      prompt?: (input: unknown) => Promise<{ data: { info: ReturnType<typeof assistantInfo> } }>
+      prompt?: (input: unknown) => Promise<{ data: { info: unknown } }>
       sessionUpdate?: (update: SessionNotification) => Promise<void>
     },
   ) => {
@@ -217,6 +217,7 @@ describe("ACP service sessions", () => {
     const aborts: string[] = []
     const forks: string[] = []
     const prompts: unknown[] = []
+    const creates: unknown[] = []
     const commands: unknown[] = []
     const summarizes: unknown[] = []
     const usageUpdates: string[] = []
@@ -256,7 +257,10 @@ describe("ACP service sessions", () => {
           }),
       },
       session: {
-        create: () => Promise.resolve({ data: { id: "ses_new" } }),
+        create: (input: unknown) => {
+          creates.push(input)
+          return Promise.resolve({ data: { id: "ses_new" } })
+        },
         get: options?.get ?? (() => Promise.resolve({ data: { id: "ses_loaded" } })),
         list: (input: { directory?: string }) =>
           Promise.resolve({
@@ -340,6 +344,7 @@ describe("ACP service sessions", () => {
       aborts,
       forks,
       prompts,
+      creates,
       commands,
       summarizes,
       usageUpdates,
@@ -1468,6 +1473,119 @@ describe("ACP service sessions", () => {
     expect(prompts[0]).not.toHaveProperty("messageID")
   })
 
+  it("documentor: forwards the documentor prompt meta to the v1 prompt", async () => {
+    const { service, prompts } = makeService()
+    const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+
+    await Effect.runPromise(
+      service.prompt({
+        sessionId: session.sessionId,
+        messageId: "msg_user_ses_a_1700000000000_m1",
+        prompt: [{ type: "text", text: "@mentor what do you think?" }],
+        _meta: {
+          documentor: {
+            author: { id: "u_alice", name: "Alice" },
+            system: "This is a discussion among Alice and Bob.",
+            partMetadata: { mentions: [{ kind: "mentor" }] },
+          },
+        },
+      }),
+    )
+
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toMatchObject({
+      sessionID: session.sessionId,
+      messageID: "msg_user_ses_a_1700000000000_m1",
+      author: { id: "u_alice", name: "Alice" },
+      system: "This is a discussion among Alice and Bob.",
+      parts: [{ type: "text", text: "@mentor what do you think?", metadata: { mentions: [{ kind: "mentor" }] } }],
+    })
+    expect(prompts[0]).not.toHaveProperty("noReply")
+    expect(prompts[0]).not.toHaveProperty("answerable")
+  })
+
+  it("documentor: part metadata lands on the first text part only", async () => {
+    const { service, prompts } = makeService()
+    const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+
+    await Effect.runPromise(
+      service.prompt({
+        sessionId: session.sessionId,
+        prompt: [
+          { type: "text", text: "first" },
+          { type: "text", text: "second" },
+        ],
+        _meta: { documentor: { partMetadata: { mentions: [{ kind: "all" }] } } },
+      }),
+    )
+
+    expect((prompts[0] as { parts: unknown[] }).parts).toEqual([
+      { type: "text", text: "first", metadata: { mentions: [{ kind: "all" }] } },
+      { type: "text", text: "second" },
+    ])
+  })
+
+  it("documentor: a noReply prompt returns end_turn without waiting for idle", async () => {
+    // The fake prompt never pushes an idle event: a regression that waits for idle times out here.
+    const { service, prompts, events } = makeService([], {
+      prompt: () => Promise.resolve({ data: { info: userInfo("msg_user_ses_a_1700000000000_n1") } }),
+    })
+    const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+    const pushed = events.push
+    events.push = () => {}
+
+    const result = await Effect.runPromise(
+      service
+        .prompt({
+          sessionId: session.sessionId,
+          messageId: "msg_user_ses_a_1700000000000_n1",
+          prompt: [{ type: "text", text: "just chatting" }],
+          _meta: { documentor: { author: { id: "u_bob", name: "Bob" }, noReply: true, answerable: false } },
+        })
+        .pipe(Effect.timeout("2 seconds")),
+    )
+    events.push = pushed
+
+    expect(prompts[0]).toMatchObject({ noReply: true, answerable: false, author: { id: "u_bob", name: "Bob" } })
+    expect(result).toEqual({ stopReason: "end_turn", userMessageId: "msg_user_ses_a_1700000000000_n1", _meta: {} })
+  })
+
+  it("documentor: malformed documentor meta is ignored", async () => {
+    const { service, prompts } = makeService()
+    const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+
+    const result = await Effect.runPromise(
+      service.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hello" }],
+        _meta: { documentor: { author: "Alice", answerable: "no", noReply: "yes", system: 42 } },
+      }),
+    )
+
+    expect(result.stopReason).toBe("end_turn")
+    expect(prompts[0]).not.toHaveProperty("author")
+    expect(prompts[0]).not.toHaveProperty("answerable")
+    expect(prompts[0]).not.toHaveProperty("noReply")
+    expect(prompts[0]).not.toHaveProperty("system")
+  })
+
+  it("documentor: forwards session metadata from the new-session meta", async () => {
+    const { service, creates } = makeService()
+
+    await Effect.runPromise(
+      service.newSession({
+        cwd: "/workspace",
+        mcpServers: [],
+        _meta: { documentor: { metadata: { documentor: { kind: "discussion" } } } },
+      }),
+    )
+    await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+
+    expect(creates).toHaveLength(2)
+    expect(creates[0]).toMatchObject({ metadata: { documentor: { kind: "discussion" } } })
+    expect(creates[1]).not.toHaveProperty("metadata")
+  })
+
   it("waits for queued session updates before returning end_turn", async () => {
     const called = deferred<void>()
     const response = deferred<{ data: { info: ReturnType<typeof assistantInfo> } }>()
@@ -1733,6 +1851,17 @@ describe("ACP service sessions", () => {
     expect(error.code).toBe(-32000)
   })
 })
+
+function userInfo(id: string) {
+  return {
+    id,
+    sessionID: "ses_new",
+    role: "user" as const,
+    time: { created: Date.now() },
+    agent: "build",
+    model: { providerID, modelID },
+  }
+}
 
 function assistantInfo(
   tokens: UsageService.AssistantTokenCost["tokens"],
