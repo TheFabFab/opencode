@@ -1113,7 +1113,13 @@ const layer = Layer.effect(
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
-          if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+          if (!lastUser) {
+            // Nothing to answer: every user message is unanswerable (or there is none). Leave
+            // through the normal exit, which returns the newest assistant message (or the newest
+            // message) without a step; the runner sets the session idle when the loop returns.
+            yield* Effect.logInfo("exiting loop, nothing answerable", { "session.id": sessionID })
+            break
+          }
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
