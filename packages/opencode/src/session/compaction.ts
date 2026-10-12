@@ -287,7 +287,7 @@ const layer = Layer.effect(
 
       loop: for (let msgIndex = msgs.length - 1; msgIndex >= 0; msgIndex--) {
         const msg = msgs[msgIndex]
-        if (msg.info.role === "user") turns++
+        if (msg.info.role === "user" && msg.info.answerable !== false) turns++
         if (turns < 2) continue
         if (msg.info.role === "assistant" && msg.info.summary) break loop
         for (let partIndex = msg.parts.length - 1; partIndex >= 0; partIndex--) {
