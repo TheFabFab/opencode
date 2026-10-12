@@ -1675,6 +1675,123 @@ it.instance("documentor: an unanswerable prompt with no parts stores a row and r
   }),
 )
 
+it.instance("documentor: an unanswerable message stored mid-turn does not extend the turn", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.hold("first", deferredAsPromise(gate))
+    // Queued so a regression that takes a second step returns instead of hanging.
+    yield* llm.text("must not be requested")
+
+    const a = yield* prompt
+      .prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [{ type: "text", text: "first" }] })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    const id = MessageID.ascending()
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      author: { id: "u_bob", name: "Bob" },
+      parts: [{ type: "text", text: "a side remark while the mentor works" }],
+    })
+    yield* Deferred.succeed(gate, void 0)
+
+    const ea = yield* Fiber.await(a)
+    expect(Exit.isSuccess(ea)).toBe(true)
+    // The upstream case "prompt submitted during an active run is included in the next LLM input" is the
+    // control: the same second message without answerable: false makes this 2.
+    expect(yield* llm.calls).toBe(1)
+
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    const assistants = msgs.filter((msg) => msg.info.role === "assistant")
+    expect(assistants).toHaveLength(1)
+    const only = assistants[0]!.info
+    if (only.role !== "assistant") throw new Error("expected an assistant message")
+    expect(only.parentID).not.toBe(id)
+    expect(msgs.some((msg) => msg.info.role === "user" && msg.info.id === id)).toBe(true)
+  }),
+)
+
+it.instance("documentor: only unanswerable messages: an empty prompt calls no model", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("must not be requested")
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      parts: [{ type: "text", text: "note one" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      parts: [{ type: "text", text: "note two" }],
+    })
+
+    // The resume path DocuMentor uses after a cancel: no parts, no noReply.
+    const result = yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [] })
+
+    expect(yield* llm.hits).toHaveLength(0)
+    expect(result.info.role).toBe("user")
+    expect(yield* sessions.messages({ sessionID: chat.id })).toHaveLength(2)
+  }),
+)
+
+it.instance("documentor: an answerable prompt after unanswerable ones is the one answered", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("the mentor answers")
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      parts: [{ type: "text", text: "note one" }],
+    })
+    const asked = MessageID.ascending()
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: asked,
+      agent: "build",
+      model: ref,
+      parts: [{ type: "text", text: "@mentor what do you think?" }],
+    })
+
+    if (result.info.role !== "assistant") throw new Error("expected an assistant message")
+    expect(result.info.parentID).toBe(asked)
+    expect(yield* llm.calls).toBe(1)
+    const inputs = yield* llm.inputs
+    const messages = inputs.at(-1)?.messages
+    if (!Array.isArray(messages)) throw new Error("expected LLM messages")
+    const roles = messages.map((m: { role: string; content: unknown }) => m.role).filter((role) => role !== "system")
+    expect(roles).toEqual(["user", "user"])
+  }),
+)
+
 it.instance("assertNotBusy fails with BusyError when loop running", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
