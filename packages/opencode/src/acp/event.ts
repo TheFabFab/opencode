@@ -35,9 +35,19 @@ type GlobalEventStream = {
  * `_meta.opencode` on every content and tool update: the assistant message the
  * update belongs to, and the user message that assistant answers. A client that
  * sends a prompt while a turn runs reads from it the moment the agent starts
- * answering that prompt.
+ * answering that prompt. A replayed user message also names its author, carries
+ * `answerable: false` when it is context no turn answers, and carries its text
+ * part's metadata.
  */
-export type OpencodeUpdateMeta = { opencode: { messageId: string; parentId: string | null } }
+export type OpencodeUpdateMeta = {
+  opencode: {
+    messageId: string
+    parentId: string | null
+    author?: { id: string; name: string }
+    answerable?: boolean
+    partMetadata?: Record<string, unknown>
+  }
+}
 
 export function start(input: { sdk: OpencodeClient; connection: Connection; session: ACPSession.Interface }) {
   const subscription = new Subscription(input)
@@ -144,6 +154,11 @@ export class Subscription {
         : message.info.role === "user"
           ? "user_message_chunk"
           : "agent_message_chunk"
+    // The generated SDK `Message` type does not declare `author`/`answerable` on a user message.
+    const user =
+      message.info.role === "user"
+        ? (message.info as { author?: { id: string; name: string }; answerable?: boolean })
+        : undefined
 
     for (const chunk of partsToContentChunks([part as ReplayPart])) {
       await this.input.connection.sessionUpdate({
@@ -152,16 +167,15 @@ export class Subscription {
           sessionUpdate,
           messageId: part.type === "reasoning" ? part.id : message.info.id,
           ...chunk,
-          ...(sessionUpdate === "user_message_chunk"
-            ? {}
-            : {
-                _meta: {
-                  opencode: {
-                    messageId: message.info.id,
-                    parentId: message.info.role === "assistant" ? (message.info.parentID ?? null) : null,
-                  },
-                } satisfies OpencodeUpdateMeta,
-              }),
+          _meta: {
+            opencode: {
+              messageId: message.info.id,
+              parentId: message.info.role === "assistant" ? (message.info.parentID ?? null) : null,
+              ...(user?.author ? { author: user.author } : {}),
+              ...(user?.answerable === false ? { answerable: false } : {}),
+              ...(user && part.type === "text" && part.metadata ? { partMetadata: part.metadata } : {}),
+            },
+          } satisfies OpencodeUpdateMeta,
         },
       })
     }
