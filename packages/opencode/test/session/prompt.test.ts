@@ -1651,7 +1651,27 @@ it.instance("documentor: an unanswerable prompt stores the message and runs no s
 
     expect(stored.info.role).toBe("user")
     expect(yield* llm.hits).toHaveLength(0)
-    expect(yield* sessions.messages({ sessionID: chat.id })).toHaveLength(1)
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    expect(msgs).toHaveLength(1)
+    const info = msgs[0]!.info
+    if (info.role !== "user") throw new Error("expected a user message")
+    expect(info.answerable).toBe(false)
+  }),
+)
+
+it.instance("documentor: an unanswerable prompt with no parts stores a row and runs no step", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* seed(chat.id, { finish: "stop" })
+    yield* llm.text("should not be requested")
+
+    const stored = yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, answerable: false, parts: [] })
+
+    expect(stored.info.role).toBe("user")
+    expect(yield* llm.hits).toHaveLength(0)
   }),
 )
 
