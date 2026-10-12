@@ -236,6 +236,11 @@ export type OutputFormatJsonSchema = {
 
 export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
 
+export type UserMessageAuthor = {
+  id: string
+  name: string
+}
+
 export type UserMessage = {
   id: string
   sessionID: string
@@ -259,6 +264,8 @@ export type UserMessage = {
   tools?: {
     [key: string]: boolean
   }
+  author?: UserMessageAuthor
+  answerable?: boolean
 }
 
 export type ProviderAuthError = {
@@ -9821,6 +9828,8 @@ export type SessionPromptData = {
     }
     agent?: string
     noReply?: boolean
+    author?: UserMessageAuthor
+    answerable?: boolean
     tools?: {
       [key: string]: boolean
     }
@@ -10168,6 +10177,8 @@ export type SessionPromptAsyncData = {
     }
     agent?: string
     noReply?: boolean
+    author?: UserMessageAuthor
+    answerable?: boolean
     tools?: {
       [key: string]: boolean
     }
