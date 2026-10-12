@@ -739,7 +739,14 @@ type MessageInfo = {
 }
 
 type AssistantError = NonNullable<AssistantMessage["error"]>
-type AssistantInfo = (UsageService.AssistantTokenCost & Pick<AssistantMessage, "error">) | undefined
+type AssistantInfo = UsageService.AssistantTokenCost & Pick<AssistantMessage, "error" | "role">
+// The message a prompt answers with: the newest assistant message, or the newest message of any role when the
+// session has nothing answerable (SessionPrompt's loop returns it instead of throwing).
+type PromptInfo = { readonly role: Message["role"] } | undefined
+
+function isAssistantInfo(info: PromptInfo): info is AssistantInfo {
+  return info?.role === "assistant"
+}
 
 function request<T>(fn: () => Promise<T | SdkResponse<T>>, service?: string) {
   return Effect.tryPromise({
@@ -922,13 +929,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const promptResponse = Effect.fn("ACP.promptResponse")(function* (
-  info: AssistantInfo,
+  answer: PromptInfo,
   messageId: string | null | undefined,
 ) {
-  if (!info?.error) {
+  if (!isAssistantInfo(answer)) {
     return {
       stopReason: "end_turn" as const,
-      ...(info ? { usage: UsageService.buildUsage(info) } : {}),
+      ...(messageId ? { userMessageId: messageId } : {}),
+      _meta: {},
+    }
+  }
+  const info = answer
+
+  if (!info.error) {
+    return {
+      stopReason: "end_turn" as const,
+      usage: UsageService.buildUsage(info),
       ...(messageId ? { userMessageId: messageId } : {}),
       _meta: {},
     }
