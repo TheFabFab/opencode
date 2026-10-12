@@ -51,7 +51,7 @@ type CompletedCompaction = {
 const truncate = (value: string) =>
   value.length <= TOOL_OUTPUT_MAX_CHARS ? value : `${value.slice(0, TOOL_OUTPUT_MAX_CHARS)}\n[truncated]`
 
-const serialize = (message: SessionV1.WithParts) => {
+const serialize = (message: SessionV1.WithParts, attributeAuthors: boolean) => {
   if (message.info.role === "user") {
     const text = message.parts
       .filter((part): part is SessionV1.TextPart => part.type === "text" && !part.ignored)
@@ -61,7 +61,8 @@ const serialize = (message: SessionV1.WithParts) => {
     const files = message.parts.flatMap((part) =>
       part.type === "file" ? [`[Attached ${part.mime}: ${part.filename ?? "file"}]`] : [],
     )
-    return [...(text ? [`[User]: ${text}`] : []), ...files].join("\n")
+    const prefix = attributeAuthors ? MessageV2.authorPrefix(message.info.author) : ""
+    return [...(text ? [`[User]: ${prefix}${text}`] : []), ...files].join("\n")
   }
   return message.parts
     .flatMap((part) => {
@@ -124,6 +125,7 @@ function turns(messages: SessionV1.WithParts[]) {
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
     if (msg.info.role !== "user") continue
+    if (msg.info.answerable === false) continue
     if (msg.parts.some((part) => part.type === "compaction")) continue
     result.push({
       start: i,
@@ -287,7 +289,7 @@ const layer = Layer.effect(
 
       loop: for (let msgIndex = msgs.length - 1; msgIndex >= 0; msgIndex--) {
         const msg = msgs[msgIndex]
-        if (msg.info.role === "user") turns++
+        if (msg.info.role === "user" && msg.info.answerable !== false) turns++
         if (turns < 2) continue
         if (msg.info.role === "assistant" && msg.info.summary) break loop
         for (let partIndex = msg.parts.length - 1; partIndex >= 0; partIndex--) {
@@ -328,6 +330,8 @@ const layer = Layer.effect(
         throw new Error(`Compaction parent must be a user message: ${input.parentID}`)
       }
       const userMessage = parent.info
+      const sessionInfo = yield* session.get(input.sessionID).pipe(Effect.orDie)
+      const attributeAuthors = MessageV2.isDiscussion(sessionInfo.metadata)
       const compactionPart = parent.parts.find((part): part is SessionV1.CompactionPart => part.type === "compaction")
 
       let messages = input.messages
@@ -377,7 +381,10 @@ const layer = Layer.effect(
       )
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-      const conversation = msgs.map(serialize).filter(Boolean).join("\n\n")
+      const conversation = msgs
+        .map((m) => serialize(m, attributeAuthors))
+        .filter(Boolean)
+        .join("\n\n")
       const nextPrompt =
         compacting.prompt ??
         [

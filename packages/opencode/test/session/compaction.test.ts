@@ -110,6 +110,35 @@ function createUserMessage(sessionID: SessionID, text: string) {
   })
 }
 
+function createAuthoredUserMessage(
+  sessionID: SessionID,
+  text: string,
+  author: SessionV1.UserAuthor,
+  answerable = true,
+) {
+  return Effect.gen(function* () {
+    const ssn = yield* SessionNs.Service
+    const msg = yield* ssn.updateMessage({
+      id: MessageID.ascending(),
+      role: "user",
+      sessionID,
+      agent: "build",
+      model: ref,
+      author,
+      ...(answerable ? {} : { answerable: false }),
+      time: { created: Date.now() },
+    })
+    yield* ssn.updatePart({
+      id: PartID.ascending(),
+      messageID: msg.id,
+      sessionID,
+      type: "text",
+      text,
+    })
+    return msg
+  })
+}
+
 function createAssistantMessage(sessionID: SessionID, parentID: MessageID, root: string) {
   return SessionNs.Service.use((ssn) =>
     ssn.updateMessage({
@@ -809,6 +838,72 @@ describe("session.compaction.prune", () => {
       }),
     ),
   )
+
+  it.live(
+    "documentor: side remarks after a tool call do not count as turns",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const ssn = yield* SessionNs.Service
+          const info = yield* ssn.create({})
+          const a = yield* createUserMessage(info.id, "first")
+          const b = yield* createAssistantMessage(info.id, a.id, dir)
+          yield* ssn.updatePart({
+            id: PartID.ascending(),
+            messageID: b.id,
+            sessionID: info.id,
+            type: "tool",
+            callID: crypto.randomUUID(),
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: {},
+              output: "x".repeat(200_000),
+              title: "done",
+              metadata: {},
+              time: { start: Date.now(), end: Date.now() },
+            },
+          })
+          for (const text of ["a side remark", "another side remark"]) {
+            const msg = yield* ssn.updateMessage({
+              id: MessageID.ascending(),
+              role: "user",
+              sessionID: info.id,
+              agent: "build",
+              model: ref,
+              answerable: false,
+              time: { created: Date.now() },
+            })
+            yield* ssn.updatePart({
+              id: PartID.ascending(),
+              messageID: msg.id,
+              sessionID: info.id,
+              type: "text",
+              text,
+            })
+          }
+          yield* createUserMessage(info.id, "@mentor second")
+
+          yield* compact.prune({ sessionID: info.id })
+
+          // Prune leaves the two newest turns alone; side remarks are not turns, so the tool call is still in them.
+          const msgs = yield* ssn.messages({ sessionID: info.id })
+          const part = msgs.flatMap((msg) => msg.parts).find((part) => part.type === "tool")
+          expect(part?.type).toBe("tool")
+          expect(part?.state.status).toBe("completed")
+          if (part?.type === "tool" && part.state.status === "completed") {
+            expect(part.state.time.compacted).toBeUndefined()
+          }
+        }),
+
+      {
+        config: {
+          compaction: { prune: true },
+        },
+      },
+    ),
+  )
 })
 
 describe("session.compaction.process", () => {
@@ -955,6 +1050,37 @@ describe("session.compaction.process", () => {
         auto: false,
       })
 
+      const part = yield* readCompactionPart(session.id)
+      expect(part?.type).toBe("compaction")
+      expect(part?.tail_start_id).toBe(keep.id)
+    }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 10_000 }) })),
+  )
+
+  itCompaction.instance(
+    "documentor: side remarks do not change which tail is retained",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({ metadata: { documentor: { kind: "discussion" } } })
+      const alice = { id: "u_alice", name: "Alice" }
+      const bob = { id: "u_bob", name: "Bob" }
+      yield* createAuthoredUserMessage(session.id, "@mentor first", alice)
+      const keep = yield* createAuthoredUserMessage(session.id, "@mentor second", alice)
+      yield* createAuthoredUserMessage(session.id, "a side remark", bob, false)
+      yield* createAuthoredUserMessage(session.id, "another side remark", alice, false)
+      yield* createAuthoredUserMessage(session.id, "@mentor third", bob)
+      yield* createSummaryCompaction(session.id)
+
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      const parent = msgs.at(-1)?.info.id
+      expect(parent).toBeTruthy()
+      yield* SessionCompaction.use.process({
+        parentID: parent!,
+        messages: msgs,
+        sessionID: session.id,
+        auto: false,
+      })
+
+      // Two answerable turns are kept, as in "persists tail_start_id for retained recent turns".
       const part = yield* readCompactionPart(session.id)
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(keep.id)
@@ -1508,6 +1634,44 @@ describe("session.compaction.process", () => {
     },
     { git: true },
   )
+
+  for (const [title, metadata, expected] of [
+    [
+      "documentor: a discussion's compaction request names who said what",
+      { documentor: { kind: "discussion" } },
+      ["[User]: Alice: I think chapter 3 is too long", "[User]: Bob: Agreed, the middle drags"],
+    ],
+    [
+      "documentor: an ordinary session's compaction request carries no author names",
+      undefined,
+      ["[User]: I think chapter 3 is too long", "[User]: Agreed, the middle drags"],
+    ],
+  ] as const) {
+    itCompaction.instance(title, () => {
+      const stub = llm()
+      let captured = ""
+      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create(metadata ? { metadata } : {})
+        yield* createAuthoredUserMessage(session.id, "I think chapter 3 is too long", { id: "u_alice", name: "Alice" })
+        yield* createAuthoredUserMessage(session.id, "Agreed, the middle drags", { id: "u_bob", name: "Bob" })
+        yield* createCompactionMarker(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        expect(parent).toBeTruthy()
+        yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+        for (const line of expected) expect(captured).toContain(line)
+        if (!metadata) {
+          expect(captured).not.toContain("Alice:")
+          expect(captured).not.toContain("Bob:")
+        }
+      }).pipe(withCompaction({ llm: stub.llmLayer, config: cfg({ tail_turns: 0 }) }))
+    })
+  }
 
   itCompaction.instance(
     "serializes repeated compaction history as one user message",

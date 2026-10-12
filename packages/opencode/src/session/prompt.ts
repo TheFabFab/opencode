@@ -667,6 +667,8 @@ const layer = Layer.effect(
         },
         system: input.system,
         format: input.format,
+        ...(input.author ? { author: input.author } : {}),
+        ...(input.answerable === false ? { answerable: false } : {}),
       }
 
       const current = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
@@ -1053,7 +1055,12 @@ const layer = Layer.effect(
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
-      if (input.parts.length === 0 && input.noReply !== true && (yield* hasUserMessage(input.sessionID))) {
+      if (
+        input.parts.length === 0 &&
+        input.noReply !== true &&
+        input.answerable !== false &&
+        (yield* hasUserMessage(input.sessionID))
+      ) {
         // A prompt with no parts resumes the session instead of storing an empty user message. The loop runs over
         // the messages already stored, so user messages that arrived during a cancelled step are answered, and a
         // session with nothing left to answer returns its last assistant without calling the model.
@@ -1071,7 +1078,8 @@ const layer = Layer.effect(
         yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
       }
 
-      if (input.noReply === true) return message
+      // An unanswerable message is context for a later turn, never the start of one.
+      if (input.noReply === true || input.answerable === false) return message
       return yield* loop({ sessionID: input.sessionID })
     })
 
@@ -1105,7 +1113,13 @@ const layer = Layer.effect(
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
-          if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+          if (!lastUser) {
+            // Nothing to answer: every user message is unanswerable (or there is none). Leave
+            // through the normal exit, which returns the newest assistant message (or the newest
+            // message) without a step; the runner sets the session idle when the loop returns.
+            yield* Effect.logInfo("exiting loop, nothing answerable", { "session.id": sessionID })
+            break
+          }
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
@@ -1269,7 +1283,9 @@ const layer = Layer.effect(
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
+              MessageV2.toModelMessagesEffect(msgs, model, {
+                attributeAuthors: MessageV2.isDiscussion(session.metadata),
+              }),
             ])
             const system = [
               ...env,
@@ -1512,6 +1528,8 @@ export const PromptInput = Schema.Struct({
   model: Schema.optional(ModelRef),
   agent: Schema.optional(Schema.String),
   noReply: Schema.optional(Schema.Boolean),
+  author: Schema.optional(SessionV1.UserAuthor),
+  answerable: Schema.optional(Schema.Boolean),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)).annotate({
     description:
       "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",

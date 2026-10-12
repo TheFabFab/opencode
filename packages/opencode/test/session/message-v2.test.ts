@@ -1361,6 +1361,77 @@ describe("session.message-v2.toModelMessage", () => {
     const texts = (result[0].content as any[]).filter((p) => p.type === "text")
     expect(texts.map((t) => t.text)).toStrictEqual(["", "hello"])
   })
+
+  test("documentor: attributes a user message to its author when asked", async () => {
+    const input: SessionV1.WithParts[] = [
+      {
+        info: { ...userInfo("m-alice"), author: { id: "u_alice", name: "Alice" } } as SessionV1.User,
+        parts: [{ ...basePart("m-alice", "p1"), type: "text", text: "hello" }] as SessionV1.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model, { attributeAuthors: true })).toStrictEqual([
+      { role: "user", content: [{ type: "text", text: "Alice: hello" }] },
+    ])
+  })
+
+  test("documentor: leaves the text alone when attribution is off or there is no author", async () => {
+    const withAuthor: SessionV1.WithParts[] = [
+      {
+        info: { ...userInfo("m-alice"), author: { id: "u_alice", name: "Alice" } } as SessionV1.User,
+        parts: [{ ...basePart("m-alice", "p1"), type: "text", text: "hello" }] as SessionV1.Part[],
+      },
+    ]
+    const withoutAuthor: SessionV1.WithParts[] = [
+      {
+        info: userInfo("m-anon"),
+        parts: [{ ...basePart("m-anon", "p1"), type: "text", text: "hello" }] as SessionV1.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(withAuthor, model)).toStrictEqual([
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+    ])
+    expect(await MessageV2.toModelMessages(withoutAuthor, model, { attributeAuthors: true })).toStrictEqual([
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+    ])
+  })
+
+  test("documentor: the prefix goes on the first non-synthetic text part only", async () => {
+    const input: SessionV1.WithParts[] = [
+      {
+        info: { ...userInfo("m-alice"), author: { id: "u_alice", name: "Alice" } } as SessionV1.User,
+        parts: [
+          { ...basePart("m-alice", "p0"), type: "text", text: "<reminder>", synthetic: true },
+          { ...basePart("m-alice", "p1"), type: "text", text: "first" },
+          { ...basePart("m-alice", "p2"), type: "text", text: "second" },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model, { attributeAuthors: true })).toStrictEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<reminder>" },
+          { type: "text", text: "Alice: first" },
+          { type: "text", text: "second" },
+        ],
+      },
+    ])
+  })
+
+  test("documentor: author names are flattened to one line", () => {
+    expect(MessageV2.authorPrefix({ id: "u", name: "Dr. Müller:\nPädiatrie  " })).toBe("Dr. Müller: Pädiatrie: ")
+    expect(MessageV2.authorPrefix({ id: "u", name: "   " })).toBe("")
+  })
+
+  test("documentor: a session is a discussion by its metadata", () => {
+    expect(MessageV2.isDiscussion({ documentor: { kind: "discussion" } })).toBe(true)
+    expect(MessageV2.isDiscussion({ documentor: { kind: "chat" } })).toBe(false)
+    expect(MessageV2.isDiscussion({})).toBe(false)
+    expect(MessageV2.isDiscussion(undefined)).toBe(false)
+  })
 })
 
 describe("session.message-v2.fromError", () => {

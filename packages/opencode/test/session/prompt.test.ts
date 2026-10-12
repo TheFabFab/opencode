@@ -1584,6 +1584,220 @@ it.instance("documentor: an empty prompt while a loop runs joins that loop", () 
   }),
 )
 
+it.instance("documentor: a prompt stores its author and whether it is answerable", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("should not be requested")
+
+    const stored = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      author: { id: "u_alice", name: "Alice" },
+      parts: [{ type: "text", text: "hello everyone" }],
+    })
+
+    expect(stored.info.role).toBe("user")
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    expect(msgs).toHaveLength(1)
+    const info = msgs[0]!.info
+    if (info.role !== "user") throw new Error("expected a user message")
+    expect(info.author).toEqual({ id: "u_alice", name: "Alice" })
+    expect(info.answerable).toBe(false)
+    expect(yield* llm.hits).toHaveLength(0)
+  }),
+)
+
+it.instance("documentor: a prompt without the new fields stores neither", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("reply")
+
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [{ type: "text", text: "hi" }] })
+
+    const users = (yield* sessions.messages({ sessionID: chat.id })).filter((msg) => msg.info.role === "user")
+    expect(users).toHaveLength(1)
+    const info = users[0]!.info
+    if (info.role !== "user") throw new Error("expected a user message")
+    expect(info).not.toHaveProperty("author")
+    expect(info).not.toHaveProperty("answerable")
+  }),
+)
+
+it.instance("documentor: an unanswerable prompt stores the message and runs no step", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("should not be requested")
+
+    // answerable: false without noReply: the loop must not start.
+    const stored = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      answerable: false,
+      parts: [{ type: "text", text: "just a note" }],
+    })
+
+    expect(stored.info.role).toBe("user")
+    expect(yield* llm.hits).toHaveLength(0)
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    expect(msgs).toHaveLength(1)
+    const info = msgs[0]!.info
+    if (info.role !== "user") throw new Error("expected a user message")
+    expect(info.answerable).toBe(false)
+  }),
+)
+
+it.instance("documentor: an unanswerable prompt with no parts stores a row and runs no step", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* seed(chat.id, { finish: "stop" })
+    yield* llm.text("should not be requested")
+
+    const stored = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      answerable: false,
+      parts: [],
+    })
+
+    expect(stored.info.role).toBe("user")
+    expect(yield* llm.hits).toHaveLength(0)
+  }),
+)
+
+it.instance("documentor: an unanswerable message stored mid-turn does not extend the turn", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.hold("first", deferredAsPromise(gate))
+    // Queued so a regression that takes a second step returns instead of hanging.
+    yield* llm.text("must not be requested")
+
+    const a = yield* prompt
+      .prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [{ type: "text", text: "first" }] })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    const id = MessageID.ascending()
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      author: { id: "u_bob", name: "Bob" },
+      parts: [{ type: "text", text: "a side remark while the mentor works" }],
+    })
+    yield* Deferred.succeed(gate, void 0)
+
+    const ea = yield* Fiber.await(a)
+    expect(Exit.isSuccess(ea)).toBe(true)
+    // The upstream case "prompt submitted during an active run is included in the next LLM input" is the
+    // control: the same second message without answerable: false makes this 2.
+    expect(yield* llm.calls).toBe(1)
+
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    const assistants = msgs.filter((msg) => msg.info.role === "assistant")
+    expect(assistants).toHaveLength(1)
+    const only = assistants[0]!.info
+    if (only.role !== "assistant") throw new Error("expected an assistant message")
+    expect(only.parentID).not.toBe(id)
+    expect(msgs.some((msg) => msg.info.role === "user" && msg.info.id === id)).toBe(true)
+  }),
+)
+
+it.instance("documentor: only unanswerable messages: an empty prompt calls no model", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("must not be requested")
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      parts: [{ type: "text", text: "note one" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      parts: [{ type: "text", text: "note two" }],
+    })
+
+    // The resume path DocuMentor uses after a cancel: no parts, no noReply.
+    const result = yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [] })
+
+    expect(yield* llm.hits).toHaveLength(0)
+    expect(result.info.role).toBe("user")
+    expect(yield* sessions.messages({ sessionID: chat.id })).toHaveLength(2)
+  }),
+)
+
+it.instance("documentor: an answerable prompt after unanswerable ones is the one answered", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("the mentor answers")
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      parts: [{ type: "text", text: "note one" }],
+    })
+    const asked = MessageID.ascending()
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: asked,
+      agent: "build",
+      model: ref,
+      parts: [{ type: "text", text: "@mentor what do you think?" }],
+    })
+
+    if (result.info.role !== "assistant") throw new Error("expected an assistant message")
+    expect(result.info.parentID).toBe(asked)
+    expect(yield* llm.calls).toBe(1)
+    const inputs = yield* llm.inputs
+    const messages = inputs.at(-1)?.messages
+    if (!Array.isArray(messages)) throw new Error("expected LLM messages")
+    const roles = messages.map((m: { role: string; content: unknown }) => m.role).filter((role) => role !== "system")
+    expect(roles).toEqual(["user", "user"])
+  }),
+)
+
 it.instance("assertNotBusy fails with BusyError when loop running", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
@@ -2555,4 +2769,46 @@ noLLMServer.instance(
       }
     }),
   30_000,
+)
+
+it.instance("documentor: a discussion's turn sees every human message prefixed with its author", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const discussion = yield* sessions.create({ title: "Chapter 3", metadata: { documentor: { kind: "discussion" } } })
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("the mentor answers the group")
+    yield* llm.text("the mentor answers the chat")
+
+    const say = (sessionID: SessionID, name: string, text: string, answerable: boolean) =>
+      prompt.prompt({
+        sessionID,
+        agent: "build",
+        model: ref,
+        ...(answerable ? {} : { noReply: true, answerable: false }),
+        author: { id: `u_${name.toLowerCase()}`, name },
+        parts: [{ type: "text", text }],
+      })
+
+    yield* say(discussion.id, "Alice", "I think chapter 3 is too long", false)
+    yield* say(discussion.id, "Bob", "Agreed, the middle drags", false)
+    yield* say(discussion.id, "Alice", "@mentor what would you cut?", true)
+
+    yield* say(chat.id, "Alice", "summarise chapter 3", true)
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(2)
+    const texts = (i: number) =>
+      (inputs[i]!.messages as { role: string; content: string | { type: string; text?: string }[] }[])
+        .filter((m) => m.role === "user")
+        .map((m) => (typeof m.content === "string" ? m.content : m.content.map((c) => c.text ?? "").join("")))
+    expect(texts(0)).toEqual([
+      "Alice: I think chapter 3 is too long",
+      "Bob: Agreed, the middle drags",
+      "Alice: @mentor what would you cut?",
+    ])
+    // The ordinary chat carries authors too, and sends the text unprefixed.
+    expect(texts(1)).toEqual(["summarise chapter 3"])
+  }),
 )

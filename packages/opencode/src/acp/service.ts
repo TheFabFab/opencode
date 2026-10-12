@@ -167,6 +167,7 @@ export function make(input: {
     const selected = selectDefaultModel(snapshot)
     const variant = selectVariant(snapshot, selected)
     const modeId = snapshot.availableModes.length > 0 ? snapshot.defaultModeID : undefined
+    const documentor = documentorMeta(params._meta)
     const created = yield* profiledRequest(
       "acp.newSession.session.create",
       () =>
@@ -180,6 +181,7 @@ export function make(input: {
               id: selected.modelID,
               ...(variant ? { variant } : {}),
             },
+            ...(documentor.metadata ? { metadata: documentor.metadata } : {}),
           },
           { throwOnError: true },
         ),
@@ -520,29 +522,40 @@ export function make(input: {
       const parts = promptContentToParts(params.prompt)
       const command = detectSlashCommand(parts)
       const messageID = parts.length > 0 ? opencodeMessageID(params.messageId) : undefined
+      const documentor = documentorMeta(params._meta)
+      const silent = documentor.noReply === true || documentor.answerable === false
 
       if (!command) {
-        const response = yield* request(
-          () =>
-            runUntilIdle(current.id, () =>
-              input.sdk.session.prompt(
-                {
-                  sessionID: current.id,
-                  ...(messageID ? { messageID } : {}),
-                  model: {
-                    providerID: selected.providerID,
-                    modelID: selected.modelID,
-                  },
-                  ...(variant ? { variant } : {}),
-                  parts,
-                  ...(modeId ? { agent: modeId } : {}),
-                  directory: current.cwd,
-                },
-                { throwOnError: true },
-              ),
-            ),
-          "session",
-        )
+        const send = () =>
+          input.sdk.session.prompt(
+            {
+              sessionID: current.id,
+              ...(messageID ? { messageID } : {}),
+              model: {
+                providerID: selected.providerID,
+                modelID: selected.modelID,
+              },
+              ...(variant ? { variant } : {}),
+              parts: withPartMetadata(parts, documentor.partMetadata),
+              ...(modeId ? { agent: modeId } : {}),
+              directory: current.cwd,
+              ...(documentor.author ? { author: documentor.author } : {}),
+              ...(documentor.answerable === false ? { answerable: false } : {}),
+              ...(documentor.noReply ? { noReply: true } : {}),
+              ...(documentor.system ? { system: documentor.system } : {}),
+            },
+            { throwOnError: true },
+          )
+        if (silent) {
+          // No loop runs, so no idle event follows; the stored user message is the whole result.
+          yield* request(send, "session")
+          return {
+            stopReason: "end_turn" as const,
+            ...(params.messageId ? { userMessageId: params.messageId } : {}),
+            _meta: {},
+          }
+        }
+        const response = yield* request(() => runUntilIdle(current.id, send), "session")
         yield* sendUsageUpdate(input.usage, input.sdk, input.connection, current.id, current.cwd)
         return yield* promptResponse(response.info, params.messageId)
       }
@@ -857,6 +870,49 @@ function sessionIdFromMeta(meta: unknown) {
 // opencode-minted id. An empty prompt creates no message (SessionPrompt.prompt), so it names none.
 function opencodeMessageID(messageId: string | null | undefined) {
   return typeof messageId === "string" && messageId.startsWith("msg") ? messageId : undefined
+}
+
+// DocuMentor's additions to a prompt and to a new session travel in ACP's `_meta`, under one key, so that
+// another client's `_meta` is never read as ours. Each field is taken only when it has the expected shape.
+export type DocumentorMeta = {
+  author?: { id: string; name: string }
+  answerable?: false
+  noReply?: true
+  system?: string
+  /** Becomes the `metadata` of the prompt's first text part (DocuMentor keeps a message's mentions there). */
+  partMetadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>
+}
+
+export function documentorMeta(meta: unknown): DocumentorMeta {
+  const root = isRecord(meta) ? meta["documentor"] : undefined
+  if (!isRecord(root)) return {}
+  const out: DocumentorMeta = {}
+  const author = root["author"]
+  if (isRecord(author) && typeof author["id"] === "string" && typeof author["name"] === "string") {
+    out.author = { id: author["id"], name: author["name"] }
+  }
+  if (root["answerable"] === false) out.answerable = false
+  if (root["noReply"] === true) out.noReply = true
+  if (typeof root["system"] === "string" && root["system"] !== "") out.system = root["system"]
+  if (isRecord(root["partMetadata"])) out.partMetadata = root["partMetadata"]
+  if (isRecord(root["metadata"])) out.metadata = root["metadata"]
+  return out
+}
+
+/** The prompt's parts with `partMetadata` on the first text part; the input is not changed. */
+export function withPartMetadata<T extends { type: string }>(
+  parts: T[],
+  partMetadata: Record<string, unknown> | undefined,
+): T[] {
+  if (!partMetadata) return parts
+  const index = parts.findIndex((part) => part.type === "text")
+  if (index === -1) return parts
+  return parts.map((part, i) => (i === index ? { ...part, metadata: partMetadata } : part))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 const promptResponse = Effect.fn("ACP.promptResponse")(function* (

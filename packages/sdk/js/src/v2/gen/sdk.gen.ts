@@ -263,6 +263,7 @@ import type {
   TuiShowToastResponses,
   TuiSubmitPromptErrors,
   TuiSubmitPromptResponses,
+  UserMessageAuthor,
   V2AgentListErrors,
   V2AgentListResponses,
   V2CommandListErrors,
@@ -3753,6 +3754,8 @@ export class Session2 extends HeyApiClient {
       }
       agent?: string
       noReply?: boolean
+      author?: UserMessageAuthor
+      answerable?: boolean
       tools?: {
         [key: string]: boolean
       }
@@ -3775,6 +3778,8 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "model" },
             { in: "body", key: "agent" },
             { in: "body", key: "noReply" },
+            { in: "body", key: "author" },
+            { in: "body", key: "answerable" },
             { in: "body", key: "tools" },
             { in: "body", key: "format" },
             { in: "body", key: "system" },
@@ -4106,6 +4111,8 @@ export class Session2 extends HeyApiClient {
       }
       agent?: string
       noReply?: boolean
+      author?: UserMessageAuthor
+      answerable?: boolean
       tools?: {
         [key: string]: boolean
       }
@@ -4128,6 +4135,8 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "model" },
             { in: "body", key: "agent" },
             { in: "body", key: "noReply" },
+            { in: "body", key: "author" },
+            { in: "body", key: "answerable" },
             { in: "body", key: "tools" },
             { in: "body", key: "format" },
             { in: "body", key: "system" },
