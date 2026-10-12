@@ -571,6 +571,7 @@ describe("ACP service sessions", () => {
         sessionUpdate: "user_message_chunk",
         messageId: "msg_user",
         content: { type: "text", text: "hello" },
+        _meta: { opencode: { messageId: "msg_user", parentId: null } },
       },
       {
         sessionUpdate: "agent_message_chunk",
@@ -641,7 +642,9 @@ describe("ACP service sessions", () => {
     await Effect.runPromise(service.loadSession({ cwd: "/workspace", sessionId: "ses_loaded", mcpServers: [] }))
 
     const replayed = updates.map((item) => item.update)
-    expect(replayed.find((item) => item.sessionUpdate === "user_message_chunk")).not.toHaveProperty("_meta")
+    expect(replayed.find((item) => item.sessionUpdate === "user_message_chunk")?._meta).toEqual({
+      opencode: { messageId: "msg_user", parentId: null },
+    })
     expect(replayed.find((item) => item.sessionUpdate === "agent_message_chunk")).toMatchObject({
       _meta: { opencode: { messageId: "msg_assistant", parentId: "msg_user" } },
     })

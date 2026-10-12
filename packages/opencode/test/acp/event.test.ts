@@ -840,6 +840,101 @@ describe("documentor: acp update message meta", () => {
     expect(harness.calls.message).toBe(0)
   })
 
+  it("documentor: replays a user message with its author, answerable flag and part metadata", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_replay_user", cwd: "/workspace" }))
+
+    await harness.subscription.replayMessage({
+      info: {
+        id: "msg_user_1",
+        sessionID: "ses_replay_user",
+        role: "user",
+        time: { created: 1 },
+        agent: "build",
+        model: { providerID: "provider", modelID: "model" },
+        author: { id: "u_alice", name: "Alice" },
+        answerable: false,
+      },
+      parts: [
+        {
+          id: "part_user_1",
+          sessionID: "ses_replay_user",
+          messageID: "msg_user_1",
+          type: "text",
+          text: "hello @Bob",
+          metadata: { mentions: [{ kind: "user", id: "u_bob", name: "Bob" }] },
+        },
+      ],
+    } as unknown as SessionMessageResponse)
+
+    expect(harness.updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "user_message_chunk",
+        messageId: "msg_user_1",
+        content: { type: "text", text: "hello @Bob" },
+        _meta: {
+          opencode: {
+            messageId: "msg_user_1",
+            parentId: null,
+            author: { id: "u_alice", name: "Alice" },
+            answerable: false,
+            partMetadata: { mentions: [{ kind: "user", id: "u_bob", name: "Bob" }] },
+          },
+        },
+      },
+    ])
+  })
+
+  it("documentor: replays a user message without the new fields with the bare meta", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_replay_plain", cwd: "/workspace" }))
+
+    await harness.subscription.replayMessage({
+      info: {
+        id: "msg_user_2",
+        sessionID: "ses_replay_plain",
+        role: "user",
+        time: { created: 1 },
+        agent: "build",
+        model: { providerID: "provider", modelID: "model" },
+      },
+      parts: [{ id: "part_user_2", sessionID: "ses_replay_plain", messageID: "msg_user_2", type: "text", text: "hi" }],
+    } as unknown as SessionMessageResponse)
+
+    expect(harness.updates[0]?.update).toEqual({
+      sessionUpdate: "user_message_chunk",
+      messageId: "msg_user_2",
+      content: { type: "text", text: "hi" },
+      _meta: { opencode: { messageId: "msg_user_2", parentId: null } },
+    })
+  })
+
+  it("documentor: replays an assistant text chunk without its part metadata", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_replay_answer", cwd: "/workspace" }))
+
+    await harness.subscription.replayMessage({
+      info: { id: "msg_answer_3", sessionID: "ses_replay_answer", role: "assistant", parentID: "msg_user_3" },
+      parts: [
+        {
+          id: "part_answer_3",
+          sessionID: "ses_replay_answer",
+          messageID: "msg_answer_3",
+          type: "text",
+          text: "hi there",
+          metadata: { openai: { itemId: "item_1" } },
+        },
+      ],
+    } as unknown as SessionMessageResponse)
+
+    expect(harness.updates[0]?.update).toEqual({
+      sessionUpdate: "agent_message_chunk",
+      messageId: "msg_answer_3",
+      content: { type: "text", text: "hi there" },
+      _meta: { opencode: { messageId: "msg_answer_3", parentId: "msg_user_3" } },
+    })
+  })
+
   it("documentor: names the assistant message, not the reasoning part, on thought chunks", async () => {
     const harness = createHarness()
     await createKnownSession(harness.session, "ses_meta", {
