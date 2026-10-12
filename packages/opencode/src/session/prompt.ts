@@ -667,6 +667,8 @@ const layer = Layer.effect(
         },
         system: input.system,
         format: input.format,
+        ...(input.author ? { author: input.author } : {}),
+        ...(input.answerable === false ? { answerable: false } : {}),
       }
 
       const current = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
@@ -1071,7 +1073,8 @@ const layer = Layer.effect(
         yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
       }
 
-      if (input.noReply === true) return message
+      // An unanswerable message is context for a later turn, never the start of one.
+      if (input.noReply === true || input.answerable === false) return message
       return yield* loop({ sessionID: input.sessionID })
     })
 
@@ -1512,6 +1515,8 @@ export const PromptInput = Schema.Struct({
   model: Schema.optional(ModelRef),
   agent: Schema.optional(Schema.String),
   noReply: Schema.optional(Schema.Boolean),
+  author: Schema.optional(SessionV1.UserAuthor),
+  answerable: Schema.optional(Schema.Boolean),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)).annotate({
     description:
       "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",

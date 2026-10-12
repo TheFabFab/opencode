@@ -1584,6 +1584,77 @@ it.instance("documentor: an empty prompt while a loop runs joins that loop", () 
   }),
 )
 
+it.instance("documentor: a prompt stores its author and whether it is answerable", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("should not be requested")
+
+    const stored = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      answerable: false,
+      author: { id: "u_alice", name: "Alice" },
+      parts: [{ type: "text", text: "hello everyone" }],
+    })
+
+    expect(stored.info.role).toBe("user")
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    expect(msgs).toHaveLength(1)
+    const info = msgs[0]!.info
+    if (info.role !== "user") throw new Error("expected a user message")
+    expect(info.author).toEqual({ id: "u_alice", name: "Alice" })
+    expect(info.answerable).toBe(false)
+    expect(yield* llm.hits).toHaveLength(0)
+  }),
+)
+
+it.instance("documentor: a prompt without the new fields stores neither", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("reply")
+
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [{ type: "text", text: "hi" }] })
+
+    const users = (yield* sessions.messages({ sessionID: chat.id })).filter((msg) => msg.info.role === "user")
+    expect(users).toHaveLength(1)
+    const info = users[0]!.info
+    if (info.role !== "user") throw new Error("expected a user message")
+    expect(info).not.toHaveProperty("author")
+    expect(info).not.toHaveProperty("answerable")
+  }),
+)
+
+it.instance("documentor: an unanswerable prompt stores the message and runs no step", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("should not be requested")
+
+    // answerable: false without noReply: the loop must not start.
+    const stored = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      answerable: false,
+      parts: [{ type: "text", text: "just a note" }],
+    })
+
+    expect(stored.info.role).toBe("user")
+    expect(yield* llm.hits).toHaveLength(0)
+    expect(yield* sessions.messages({ sessionID: chat.id })).toHaveLength(1)
+  }),
+)
+
 it.instance("assertNotBusy fails with BusyError when loop running", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
