@@ -1537,20 +1537,23 @@ describe("ACP service sessions", () => {
     const pushed = events.push
     events.push = () => {}
 
-    const result = await Effect.runPromise(
-      service
-        .prompt({
-          sessionId: session.sessionId,
-          messageId: "msg_user_ses_a_1700000000000_n1",
-          prompt: [{ type: "text", text: "just chatting" }],
-          _meta: { documentor: { author: { id: "u_bob", name: "Bob" }, noReply: true, answerable: false } },
-        })
-        .pipe(Effect.timeout("2 seconds")),
-    )
-    events.push = pushed
+    try {
+      const result = await Effect.runPromise(
+        service
+          .prompt({
+            sessionId: session.sessionId,
+            messageId: "msg_user_ses_a_1700000000000_n1",
+            prompt: [{ type: "text", text: "just chatting" }],
+            _meta: { documentor: { author: { id: "u_bob", name: "Bob" }, noReply: true, answerable: false } },
+          })
+          .pipe(Effect.timeout("2 seconds")),
+      )
 
-    expect(prompts[0]).toMatchObject({ noReply: true, answerable: false, author: { id: "u_bob", name: "Bob" } })
-    expect(result).toEqual({ stopReason: "end_turn", userMessageId: "msg_user_ses_a_1700000000000_n1", _meta: {} })
+      expect(prompts[0]).toMatchObject({ noReply: true, answerable: false, author: { id: "u_bob", name: "Bob" } })
+      expect(result).toEqual({ stopReason: "end_turn", userMessageId: "msg_user_ses_a_1700000000000_n1", _meta: {} })
+    } finally {
+      events.push = pushed
+    }
   })
 
   it("documentor: a discussion message that starts with a slash is forwarded as text", async () => {
@@ -1654,21 +1657,24 @@ describe("ACP service sessions", () => {
     const pushed = events.push
     events.push = () => {}
 
-    const result = await Effect.runPromise(
-      service
-        .prompt({
-          sessionId: session.sessionId,
-          messageId: "msg_user_ses_a_1700000000000_n2",
-          prompt: [{ type: "text", text: "a side remark" }],
-          _meta: { documentor: { author: { id: "u_bob", name: "Bob" }, answerable: false } },
-        })
-        .pipe(Effect.timeout("2 seconds")),
-    )
-    events.push = pushed
+    try {
+      const result = await Effect.runPromise(
+        service
+          .prompt({
+            sessionId: session.sessionId,
+            messageId: "msg_user_ses_a_1700000000000_n2",
+            prompt: [{ type: "text", text: "a side remark" }],
+            _meta: { documentor: { author: { id: "u_bob", name: "Bob" }, answerable: false } },
+          })
+          .pipe(Effect.timeout("2 seconds")),
+      )
 
-    expect(prompts[0]).toMatchObject({ answerable: false, author: { id: "u_bob", name: "Bob" } })
-    expect(prompts[0]).not.toHaveProperty("noReply")
-    expect(result).toEqual({ stopReason: "end_turn", userMessageId: "msg_user_ses_a_1700000000000_n2", _meta: {} })
+      expect(prompts[0]).toMatchObject({ answerable: false, author: { id: "u_bob", name: "Bob" } })
+      expect(prompts[0]).not.toHaveProperty("noReply")
+      expect(result).toEqual({ stopReason: "end_turn", userMessageId: "msg_user_ses_a_1700000000000_n2", _meta: {} })
+    } finally {
+      events.push = pushed
+    }
   })
 
   it("documentor: malformed documentor containers are ignored", async () => {

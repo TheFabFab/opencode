@@ -1555,6 +1555,34 @@ it.instance("documentor: an empty prompt on a fresh session keeps upstream behav
   }),
 )
 
+it.instance("documentor: a noReply prompt commits a pending revert", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id, { finish: "stop" })
+    yield* sessions.setRevert({
+      sessionID: chat.id,
+      revert: { messageID: seeded.user.id },
+      summary: { additions: 0, deletions: 0, files: 0 },
+    })
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "a side remark" }],
+    })
+
+    const ids = (yield* sessions.messages({ sessionID: chat.id })).map((msg) => msg.info.id)
+    expect(ids).toEqual([result.info.id])
+    expect((yield* sessions.get(chat.id)).revert).toBeUndefined()
+    expect(yield* llm.calls).toBe(0)
+  }),
+)
+
 it.instance("documentor: an empty prompt while a loop runs joins that loop", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
