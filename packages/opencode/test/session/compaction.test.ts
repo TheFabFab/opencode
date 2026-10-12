@@ -809,6 +809,72 @@ describe("session.compaction.prune", () => {
       }),
     ),
   )
+
+  it.live(
+    "documentor: side remarks after a tool call do not count as turns",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const ssn = yield* SessionNs.Service
+          const info = yield* ssn.create({})
+          const a = yield* createUserMessage(info.id, "first")
+          const b = yield* createAssistantMessage(info.id, a.id, dir)
+          yield* ssn.updatePart({
+            id: PartID.ascending(),
+            messageID: b.id,
+            sessionID: info.id,
+            type: "tool",
+            callID: crypto.randomUUID(),
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: {},
+              output: "x".repeat(200_000),
+              title: "done",
+              metadata: {},
+              time: { start: Date.now(), end: Date.now() },
+            },
+          })
+          for (const text of ["a side remark", "another side remark"]) {
+            const msg = yield* ssn.updateMessage({
+              id: MessageID.ascending(),
+              role: "user",
+              sessionID: info.id,
+              agent: "build",
+              model: ref,
+              answerable: false,
+              time: { created: Date.now() },
+            })
+            yield* ssn.updatePart({
+              id: PartID.ascending(),
+              messageID: msg.id,
+              sessionID: info.id,
+              type: "text",
+              text,
+            })
+          }
+          yield* createUserMessage(info.id, "@mentor second")
+
+          yield* compact.prune({ sessionID: info.id })
+
+          // Prune leaves the two newest turns alone; side remarks are not turns, so the tool call is still in them.
+          const msgs = yield* ssn.messages({ sessionID: info.id })
+          const part = msgs.flatMap((msg) => msg.parts).find((part) => part.type === "tool")
+          expect(part?.type).toBe("tool")
+          expect(part?.state.status).toBe("completed")
+          if (part?.type === "tool" && part.state.status === "completed") {
+            expect(part.state.time.compacted).toBeUndefined()
+          }
+        }),
+
+      {
+        config: {
+          compaction: { prune: true },
+        },
+      },
+    ),
+  )
 })
 
 describe("session.compaction.process", () => {
