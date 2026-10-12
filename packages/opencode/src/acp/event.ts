@@ -35,7 +35,8 @@ type GlobalEventStream = {
  * `_meta.opencode` on every content and tool update: the assistant message the
  * update belongs to, and the user message that assistant answers. A client that
  * sends a prompt while a turn runs reads from it the moment the agent starts
- * answering that prompt. A replayed user message also names its author, carries
+ * answering that prompt. On a replayed user message `messageId` is that user
+ * message and `parentId` is `null`; it also names its author, carries
  * `answerable: false` when it is context no turn answers, and carries its text
  * part's metadata.
  */
@@ -154,11 +155,7 @@ export class Subscription {
         : message.info.role === "user"
           ? "user_message_chunk"
           : "agent_message_chunk"
-    // The generated SDK `Message` type does not declare `author`/`answerable` on a user message.
-    const user =
-      message.info.role === "user"
-        ? (message.info as { author?: { id: string; name: string }; answerable?: boolean })
-        : undefined
+    const user = message.info.role === "user" ? message.info : undefined
 
     for (const chunk of partsToContentChunks([part as ReplayPart])) {
       await this.input.connection.sessionUpdate({
