@@ -2802,7 +2802,7 @@ it.instance("documentor: a discussion's turn sees every human message prefixed w
       "Bob: Agreed, the middle drags",
       "Alice: @mentor what would you cut?",
     ])
-    // The ordinary chat carries authors too, and sends today's prompt.
+    // The ordinary chat carries authors too, and sends the text unprefixed.
     expect(texts(1)).toEqual(["summarise chapter 3"])
   }),
 )
