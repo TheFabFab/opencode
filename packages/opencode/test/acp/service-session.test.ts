@@ -1615,6 +1615,17 @@ describe("ACP service sessions", () => {
     expect(commands[0]).toMatchObject({ command: "init", arguments: "" })
   })
 
+  it("documentor: an empty prompt whose v1 answer is a user message answers end_turn", async () => {
+    const { service } = makeService([], {
+      prompt: () => Promise.resolve({ data: { info: userInfo("msg_u") } }),
+    })
+    const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+
+    const result = await Effect.runPromise(service.prompt({ sessionId: session.sessionId, prompt: [] }))
+
+    expect(result).toEqual({ stopReason: "end_turn", _meta: {} })
+  })
+
   it("documentor: malformed documentor meta is ignored", async () => {
     const { service, prompts } = makeService()
     const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
