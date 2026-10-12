@@ -1055,7 +1055,12 @@ const layer = Layer.effect(
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
-      if (input.parts.length === 0 && input.noReply !== true && (yield* hasUserMessage(input.sessionID))) {
+      if (
+        input.parts.length === 0 &&
+        input.noReply !== true &&
+        input.answerable !== false &&
+        (yield* hasUserMessage(input.sessionID))
+      ) {
         // A prompt with no parts resumes the session instead of storing an empty user message. The loop runs over
         // the messages already stored, so user messages that arrived during a cancelled step are answered, and a
         // session with nothing left to answer returns its last assistant without calling the model.
