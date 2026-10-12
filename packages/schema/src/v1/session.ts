@@ -329,6 +329,13 @@ const messageBase = {
   sessionID: partBase.sessionID,
 }
 
+/** Who typed a user message, when the client that sent it says so. */
+export const UserAuthor = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+}).annotate({ identifier: "UserMessageAuthor" })
+export type UserAuthor = Schema.Schema.Type<typeof UserAuthor>
+
 export const User = Schema.Struct({
   ...messageBase,
   role: Schema.Literal("user"),
@@ -351,6 +358,13 @@ export const User = Schema.Struct({
   }),
   system: Schema.optional(Schema.String),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
+  author: Schema.optional(UserAuthor),
+  /**
+   * `false` means the loop never treats this message as the one being
+   * answered: it is read as context at the next step, but no turn runs or
+   * stays alive for it. Absent means `true`.
+   */
+  answerable: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "UserMessage" })
 export type User = Types.DeepMutable<Schema.Schema.Type<typeof User>>
 
