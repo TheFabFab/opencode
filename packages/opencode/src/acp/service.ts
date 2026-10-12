@@ -520,9 +520,10 @@ export function make(input: {
       const variant = current.variant ?? selectVariant(snapshot, selected)
       const modeId = current.modeId ?? (snapshot.availableModes.length > 0 ? snapshot.defaultModeID : undefined)
       const parts = promptContentToParts(params.prompt)
-      const command = detectSlashCommand(parts)
-      const messageID = parts.length > 0 ? opencodeMessageID(params.messageId) : undefined
       const documentor = documentorMeta(params._meta)
+      // A DocuMentor message is what a person wrote in a discussion, so a leading slash is text, never a command.
+      const command = hasDocumentorMeta(params._meta) ? undefined : detectSlashCommand(parts)
+      const messageID = parts.length > 0 ? opencodeMessageID(params.messageId) : undefined
       const silent = documentor.noReply === true || documentor.answerable === false
 
       if (!command) {
@@ -909,6 +910,11 @@ export function withPartMetadata<T extends { type: string }>(
   const index = parts.findIndex((part) => part.type === "text")
   if (index === -1) return parts
   return parts.map((part, i) => (i === index ? { ...part, metadata: partMetadata } : part))
+}
+
+/** Whether a request's `_meta` carries a DocuMentor object, whatever its fields. */
+export function hasDocumentorMeta(meta: unknown): boolean {
+  return isRecord(meta) && isRecord(meta["documentor"])
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
