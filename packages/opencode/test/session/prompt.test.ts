@@ -1668,7 +1668,13 @@ it.instance("documentor: an unanswerable prompt with no parts stores a row and r
     yield* seed(chat.id, { finish: "stop" })
     yield* llm.text("should not be requested")
 
-    const stored = yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, answerable: false, parts: [] })
+    const stored = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      answerable: false,
+      parts: [],
+    })
 
     expect(stored.info.role).toBe("user")
     expect(yield* llm.hits).toHaveLength(0)
