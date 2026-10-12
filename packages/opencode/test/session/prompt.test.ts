@@ -2764,3 +2764,45 @@ noLLMServer.instance(
     }),
   30_000,
 )
+
+it.instance("documentor: a discussion's turn sees every human message prefixed with its author", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const discussion = yield* sessions.create({ title: "Chapter 3", metadata: { documentor: { kind: "discussion" } } })
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("the mentor answers the group")
+    yield* llm.text("the mentor answers the chat")
+
+    const say = (sessionID: SessionID, name: string, text: string, answerable: boolean) =>
+      prompt.prompt({
+        sessionID,
+        agent: "build",
+        model: ref,
+        ...(answerable ? {} : { noReply: true, answerable: false }),
+        author: { id: `u_${name.toLowerCase()}`, name },
+        parts: [{ type: "text", text }],
+      })
+
+    yield* say(discussion.id, "Alice", "I think chapter 3 is too long", false)
+    yield* say(discussion.id, "Bob", "Agreed, the middle drags", false)
+    yield* say(discussion.id, "Alice", "@mentor what would you cut?", true)
+
+    yield* say(chat.id, "Alice", "summarise chapter 3", true)
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(2)
+    const texts = (i: number) =>
+      (inputs[i]!.messages as { role: string; content: string | { type: string; text?: string }[] }[])
+        .filter((m) => m.role === "user")
+        .map((m) => (typeof m.content === "string" ? m.content : m.content.map((c) => c.text ?? "").join("")))
+    expect(texts(0)).toEqual([
+      "Alice: I think chapter 3 is too long",
+      "Bob: Agreed, the middle drags",
+      "Alice: @mentor what would you cut?",
+    ])
+    // The ordinary chat carries authors too, and sends today's prompt.
+    expect(texts(1)).toEqual(["summarise chapter 3"])
+  }),
+)

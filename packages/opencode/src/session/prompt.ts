@@ -1283,7 +1283,9 @@ const layer = Layer.effect(
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
+              MessageV2.toModelMessagesEffect(msgs, model, {
+                attributeAuthors: MessageV2.isDiscussion(session.metadata),
+              }),
             ])
             const system = [
               ...env,

@@ -128,10 +128,24 @@ function providerMeta(metadata: Record<string, any> | undefined) {
   return Object.keys(rest).length > 0 ? rest : undefined
 }
 
+/** `"Name: "`, the name flattened to one line so a name cannot pose as a second speaker. */
+export function authorPrefix(author: SessionV1.UserAuthor | undefined): string {
+  const name = author?.name.replace(/\s+/g, " ").trim() ?? ""
+  return name ? `${name}: ` : ""
+}
+
+/** A discussion is a session DocuMentor marks so; its model input carries who said what. */
+export function isDiscussion(metadata: Record<string, unknown> | undefined): boolean {
+  const documentor = metadata?.["documentor"]
+  return (
+    typeof documentor === "object" && documentor !== null && (documentor as { kind?: unknown }).kind === "discussion"
+  )
+}
+
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; attributeAuthors?: boolean },
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
@@ -211,13 +225,18 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         role: "user",
         parts: [],
       }
+      const prefix = options?.attributeAuthors ? authorPrefix(msg.info.author) : ""
+      let attributed = false
       for (const part of msg.parts) {
         // User message parts should never be empty
-        if (part.type === "text" && !part.ignored && part.text !== "")
+        if (part.type === "text" && !part.ignored && part.text !== "") {
+          const own = prefix !== "" && !attributed && !part.synthetic
+          if (own) attributed = true
           userMessage.parts.push({
             type: "text",
-            text: part.text,
+            text: own ? `${prefix}${part.text}` : part.text,
           })
+        }
         // text/plain and directory files are converted into text parts, ignore them
         if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory") {
           if (options?.stripMedia && isMedia(part.mime)) {
@@ -430,7 +449,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; attributeAuthors?: boolean },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options))
 }
