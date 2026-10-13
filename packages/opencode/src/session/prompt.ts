@@ -1054,6 +1054,8 @@ const layer = Layer.effect(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      // A prompt of any kind, a stored-only (noReply or unanswerable) message included, commits a pending revert:
+      // the reverted messages are deleted before anything new is stored.
       yield* revert.cleanup(session)
       if (
         input.parts.length === 0 &&

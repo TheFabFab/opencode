@@ -520,9 +520,10 @@ export function make(input: {
       const variant = current.variant ?? selectVariant(snapshot, selected)
       const modeId = current.modeId ?? (snapshot.availableModes.length > 0 ? snapshot.defaultModeID : undefined)
       const parts = promptContentToParts(params.prompt)
-      const command = detectSlashCommand(parts)
-      const messageID = parts.length > 0 ? opencodeMessageID(params.messageId) : undefined
       const documentor = documentorMeta(params._meta)
+      // A DocuMentor message is what a person wrote in a discussion, so a leading slash is text, never a command.
+      const command = hasDocumentorMeta(params._meta) ? undefined : detectSlashCommand(parts)
+      const messageID = parts.length > 0 ? opencodeMessageID(params.messageId) : undefined
       const silent = documentor.noReply === true || documentor.answerable === false
 
       if (!command) {
@@ -738,7 +739,14 @@ type MessageInfo = {
 }
 
 type AssistantError = NonNullable<AssistantMessage["error"]>
-type AssistantInfo = (UsageService.AssistantTokenCost & Pick<AssistantMessage, "error">) | undefined
+type AssistantInfo = UsageService.AssistantTokenCost & Pick<AssistantMessage, "error" | "role">
+// The message a prompt answers with: the newest assistant message, or the newest message of any role when the
+// session has nothing answerable (SessionPrompt's loop returns it instead of throwing).
+type PromptInfo = { readonly role: Message["role"] } | undefined
+
+function isAssistantInfo(info: PromptInfo): info is AssistantInfo {
+  return info?.role === "assistant"
+}
 
 function request<T>(fn: () => Promise<T | SdkResponse<T>>, service?: string) {
   return Effect.tryPromise({
@@ -911,18 +919,32 @@ export function withPartMetadata<T extends { type: string }>(
   return parts.map((part, i) => (i === index ? { ...part, metadata: partMetadata } : part))
 }
 
+/** Whether a request's `_meta` carries a DocuMentor object, whatever its fields. */
+export function hasDocumentorMeta(meta: unknown): boolean {
+  return isRecord(meta) && isRecord(meta["documentor"])
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 const promptResponse = Effect.fn("ACP.promptResponse")(function* (
-  info: AssistantInfo,
+  answer: PromptInfo,
   messageId: string | null | undefined,
 ) {
-  if (!info?.error) {
+  if (!isAssistantInfo(answer)) {
     return {
       stopReason: "end_turn" as const,
-      ...(info ? { usage: UsageService.buildUsage(info) } : {}),
+      ...(messageId ? { userMessageId: messageId } : {}),
+      _meta: {},
+    }
+  }
+  const info = answer
+
+  if (!info.error) {
+    return {
+      stopReason: "end_turn" as const,
+      usage: UsageService.buildUsage(info),
       ...(messageId ? { userMessageId: messageId } : {}),
       _meta: {},
     }
