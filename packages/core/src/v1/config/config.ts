@@ -173,6 +173,10 @@ export const Info = Schema.Struct({
       openTelemetry: Schema.optional(Schema.Boolean).annotate({
         description: "Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)",
       }),
+      openTelemetryChatContent: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Record the prompt and the response text on the AI SDK spans. Unless true, the spans carry model, usage, timing and ids only",
+      }),
       primary_tools: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
         description: "Tools that should only be available to primary agents.",
       }),
