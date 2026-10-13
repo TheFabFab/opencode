@@ -2032,6 +2032,7 @@ export type Config = {
     disable_paste_summary?: boolean
     batch_tool?: boolean
     openTelemetry?: boolean
+    openTelemetryChatContent?: boolean
     primary_tools?: Array<string>
     continue_loop_on_deny?: boolean
     mcp_timeout?: number

@@ -28,6 +28,8 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { ProviderError } from "@/provider/error"
+import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base"
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
 
@@ -1392,6 +1394,125 @@ describe("session.llm.stream", () => {
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
+
+  // The AI SDK writes the prompt and the reply onto its spans unless told not
+  // to. experimental.openTelemetryChatContent is that switch, and absent means
+  // off, so a deployment that forgets it loses chat content from its traces
+  // rather than leaking it. Everything else on the span stays either way.
+  for (const chatContent of [false, true]) {
+    it.instance(
+      `documentor: AI SDK spans carry chat content only when openTelemetryChatContent is true (${chatContent})`,
+      () =>
+        Effect.gen(function* () {
+          const model = loadFixture("openai", "gpt-5.2").model
+          waitRequest(
+            "/responses",
+            createEventResponse(
+              [
+                {
+                  type: "response.created",
+                  response: {
+                    id: "resp-otel",
+                    created_at: Math.floor(Date.now() / 1000),
+                    model: model.id,
+                    service_tier: null,
+                  },
+                },
+                {
+                  type: "response.output_item.added",
+                  output_index: 0,
+                  item: { type: "message", id: "item-otel", status: "in_progress", role: "assistant", content: [] },
+                },
+                {
+                  type: "response.content_part.added",
+                  item_id: "item-otel",
+                  output_index: 0,
+                  content_index: 0,
+                  part: { type: "output_text", text: "", annotations: [] },
+                },
+                { type: "response.output_text.delta", item_id: "item-otel", delta: "Secret reply", logprobs: null },
+                {
+                  type: "response.completed",
+                  response: {
+                    incomplete_details: null,
+                    usage: {
+                      input_tokens: 1,
+                      input_tokens_details: null,
+                      output_tokens: 1,
+                      output_tokens_details: null,
+                    },
+                    service_tier: null,
+                  },
+                },
+              ],
+              true,
+            ),
+          )
+
+          const exporter = new InMemorySpanExporter()
+          const tracing = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })
+
+          const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
+          const sessionID = SessionID.make("session-test-otel")
+          const agent = {
+            name: "test",
+            mode: "primary",
+            options: {},
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          } satisfies Agent.Info
+          const user = {
+            id: MessageID.make("msg_user-otel"),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderV2.ID.make("openai"), modelID: resolved.id, variant: "high" },
+          } satisfies SessionV1.User
+
+          yield* drain({
+            user,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["You are a helpful assistant."],
+            messages: [{ role: "user", content: "Secret prompt" }],
+            tools: {},
+          }).pipe(Effect.provideService(OtelTracer.OtelTracer, tracing.getTracer("test")))
+          yield* Effect.promise(() => tracing.forceFlush())
+
+          const spans = exporter.getFinishedSpans()
+          const outer = spans.find((span) => span.name === "ai.streamText")
+          const inner = spans.find((span) => span.name === "ai.streamText.doStream")
+          expect(outer).toBeDefined()
+          expect(inner).toBeDefined()
+
+          const content = (keys: string[]) =>
+            keys.filter((key) => key.startsWith("ai.prompt") || key === "ai.response.text")
+          const serialized = JSON.stringify(spans.map((span) => span.attributes))
+          if (chatContent) {
+            expect(outer!.attributes["ai.response.text"]).toBe("Secret reply")
+            expect(content(Object.keys(inner!.attributes))).toContain("ai.prompt.messages")
+            expect(serialized).toContain("Secret prompt")
+          } else {
+            expect(content(Object.keys(outer!.attributes))).toEqual([])
+            expect(content(Object.keys(inner!.attributes))).toEqual([])
+            expect(serialized).not.toContain("Secret prompt")
+            expect(serialized).not.toContain("Secret reply")
+          }
+          // What the spans exist for survives the switch in both positions.
+          expect(outer!.attributes["ai.telemetry.metadata.sessionId"]).toBe(sessionID)
+          expect(outer!.attributes["session.id"]).toBe(sessionID)
+          expect(inner!.attributes["ai.usage.outputTokens"]).toBe(1)
+          expect(inner!.attributes["gen_ai.request.model"]).toBe(resolved.api.id)
+        }),
+      {
+        config: () => ({
+          ...openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`),
+          experimental: chatContent ? { openTelemetry: true, openTelemetryChatContent: true } : { openTelemetry: true },
+        }),
+      },
+    )
+  }
 
   it.instance(
     "keeps supported OpenAI models on AI SDK path when native flag is off",
