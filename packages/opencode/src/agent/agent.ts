@@ -388,6 +388,9 @@ const layer = Layer.effect(
         const params = {
           experimental_telemetry: {
             isEnabled: cfg.experimental?.openTelemetry,
+            // Same switch as session.llm: the generated agent's prompt stays off the span unless asked for.
+            recordInputs: cfg.experimental?.openTelemetryChatContent === true,
+            recordOutputs: cfg.experimental?.openTelemetryChatContent === true,
             tracer,
             metadata: {
               userId: cfg.username ?? "unknown",

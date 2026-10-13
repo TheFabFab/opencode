@@ -343,6 +343,10 @@ const live: Layer.Layer<
           }),
           experimental_telemetry: {
             isEnabled: cfg.experimental?.openTelemetry,
+            // The AI SDK records the prompt and the reply unless each flag is
+            // exactly false, so an absent openTelemetryChatContent records nothing.
+            recordInputs: cfg.experimental?.openTelemetryChatContent === true,
+            recordOutputs: cfg.experimental?.openTelemetryChatContent === true,
             functionId: "session.llm",
             tracer: telemetryTracer,
             metadata: {
