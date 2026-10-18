@@ -20,6 +20,24 @@ describe("database target", () => {
       )
   })
 
+  test("accepts the development Postgres without TLS only where switched on, by name, with sslmode=disable", () => {
+    const dev = "postgresql://u@documentor-dev-agentstate:5432/db?sslmode=disable"
+    expect(() => read({ OPENCODE_DATABASE_URL: dev })).toThrow("sslmode=verify-full")
+    expect(
+      read({ OPENCODE_DATABASE_URL: dev, OPENCODE_DATABASE_PLAINTEXT_HOST: "documentor-dev-agentstate" }).url,
+    ).toContain("documentor-dev-agentstate")
+    // The switch names no host of its own choosing, and never relaxes the URL's own mode.
+    for (const [url, host] of [
+      ["postgresql://u@db.internal:5432/db?sslmode=disable", "db.internal"],
+      ["postgresql://u@db.internal:5432/db?sslmode=disable", "documentor-dev-agentstate"],
+      ["postgresql://u@documentor-dev-agentstate:5432/db", "documentor-dev-agentstate"],
+      ["postgresql://u@documentor-dev-agentstate:5432/db?sslmode=require", "documentor-dev-agentstate"],
+    ])
+      expect(() => read({ OPENCODE_DATABASE_URL: url, OPENCODE_DATABASE_PLAINTEXT_HOST: host })).toThrow(
+        "sslmode=verify-full",
+      )
+  })
+
   test("accepts a remote host with sslmode=verify-full", () => {
     expect(read({ OPENCODE_DATABASE_URL: "postgresql://u@db.internal:5432/db?sslmode=verify-full" }).url).toContain(
       "sslmode=verify-full",
