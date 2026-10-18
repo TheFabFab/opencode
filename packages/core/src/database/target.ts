@@ -16,6 +16,23 @@ export interface Target {
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"])
 const IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/
 
+/** DocuMentor's development Postgres on a dev host's Docker network; it holds development data only. */
+const DEV_PLAINTEXT_HOST = "documentor-dev-agentstate"
+
+/**
+ * A remote host is reached only over verified TLS, with one exception: the
+ * development Postgres, which has no certificate. The host is fixed here;
+ * OPENCODE_DATABASE_PLAINTEXT_HOST only switches the exception on, so no
+ * setting can downgrade another host. The URL must say `sslmode=disable` itself.
+ */
+function plaintextAllowed(url: URL, env: Record<string, string | undefined>): boolean {
+  return (
+    env.OPENCODE_DATABASE_PLAINTEXT_HOST?.trim() === DEV_PLAINTEXT_HOST &&
+    url.hostname === DEV_PLAINTEXT_HOST &&
+    url.searchParams.get("sslmode") === "disable"
+  )
+}
+
 /** Reads where this process connects. Throws `InvalidTargetError` naming the setting at fault. */
 export function read(env: Record<string, string | undefined> = process.env): Target {
   const address = env.OPENCODE_DATABASE_URL
@@ -27,7 +44,7 @@ export function read(env: Record<string, string | undefined> = process.env): Tar
       throw new InvalidTargetError("OPENCODE_DATABASE_URL is not a valid URL")
     }
   })()
-  if (!LOOPBACK.has(url.hostname) && url.searchParams.get("sslmode") !== "verify-full")
+  if (!LOOPBACK.has(url.hostname) && url.searchParams.get("sslmode") !== "verify-full" && !plaintextAllowed(url, env))
     throw new InvalidTargetError(
       `OPENCODE_DATABASE_URL names the remote host ${url.hostname} without sslmode=verify-full`,
     )

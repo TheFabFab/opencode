@@ -52,14 +52,15 @@ because those files still type-check against it.
 
 ## Settings
 
-| Setting                           | Meaning                                                                                                 |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `OPENCODE_DATABASE_URL`           | Required. A host that is not loopback must carry `sslmode=verify-full`                                  |
-| `OPENCODE_DATABASE_SCHEMA`        | The scope's schema, sent as the search path. 1 to 63 characters of `a-z`, `0-9`, `_`                    |
-| `OPENCODE_DATABASE_POOL_MAX`      | Connections per process, 1 to 100, default 4                                                            |
-| `OPENCODE_DATABASE_ROLE_PASSWORD` | Read by `db provision` when it has to create the role                                                   |
-| `OPENCODE_DATABASE_EPHEMERAL=1`   | Tests only: each database layer creates a schema `t_<32 hex>`, migrates it, and drops it when it closes |
-| `OPENCODE_TEST_DATABASE_URL`      | Tests only: a superuser on a Postgres 18 whose database collation is `C.UTF-8`                          |
+| Setting                            | Meaning                                                                                                                                        |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENCODE_DATABASE_URL`            | Required. A host that is not loopback must carry `sslmode=verify-full`, but for the one exception below                                        |
+| `OPENCODE_DATABASE_PLAINTEXT_HOST` | `documentor-dev-agentstate` lets that host, DocuMentor's development Postgres, connect with `sslmode=disable`; any other value relaxes nothing |
+| `OPENCODE_DATABASE_SCHEMA`         | The scope's schema, sent as the search path. 1 to 63 characters of `a-z`, `0-9`, `_`                                                           |
+| `OPENCODE_DATABASE_POOL_MAX`       | Connections per process, 1 to 100, default 4                                                                                                   |
+| `OPENCODE_DATABASE_ROLE_PASSWORD`  | Read by `db provision` when it has to create the role                                                                                          |
+| `OPENCODE_DATABASE_EPHEMERAL=1`    | Tests only: each database layer creates a schema `t_<32 hex>`, migrates it, and drops it when it closes                                        |
+| `OPENCODE_TEST_DATABASE_URL`       | Tests only: a superuser on a Postgres 18 whose database collation is `C.UTF-8`                                                                 |
 
 The database must use byte-order collation (`C`, `POSIX` or `C.UTF-8`).
 opencode pages by comparing text ids, and a locale collation reorders them.
