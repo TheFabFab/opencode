@@ -1,6 +1,6 @@
 # The `documentor-pg` branch
 
-This branch is upstream opencode `v1.18.34` with its database state kept in
+This branch is upstream opencode `v1.19.3` with its database state kept in
 Postgres. It has no SQLite path. The design is in
 [`specs/2026-10-06-postgres-core-design.md`](specs/2026-10-06-postgres-core-design.md).
 

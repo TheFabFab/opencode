@@ -119,7 +119,7 @@ jobs:
         working-directory: packages/opencode
         run: bun run script/build.ts --single
         env:
-          OPENCODE_VERSION: "1.18.34"
+          OPENCODE_VERSION: "1.19.3"
 
       - name: Serve from Postgres as a scope role
         run: documentor/scripts/binary-smoke.sh packages/opencode/dist/opencode-linux-x64/bin/opencode
