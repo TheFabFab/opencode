@@ -123,12 +123,35 @@ export interface PublishOptions {
   readonly commit?: (seq: number) => Effect.Effect<void>
 }
 
+/** documentor: one durable event of a {@link Interface.publishMany} batch. */
+export interface Publication<D extends Definition = Definition> {
+  readonly definition: D
+  readonly data: Data<D>
+}
+
+/** documentor: pairs a definition with its data, typed, for {@link Interface.publishMany}. */
+export const publication = <D extends Definition>(definition: D, data: Data<D>): Publication =>
+  ({ definition, data }) as Publication
+
+/** documentor: events per INSERT in publishMany. Parts carry tool output, so a long chat's rows can be large. */
+const PUBLISH_MANY_CHUNK = 200
+
 export interface Interface {
   readonly publish: <D extends Definition>(
     definition: D,
     data: Data<D>,
     options?: PublishOptions,
   ) => Effect.Effect<Payload<D>>
+  /**
+   * documentor: publishes durable events of one aggregate in a single transaction, in order.
+   * Each event is projected and notified exactly as `publish` would; only the round trips
+   * of the per-event transaction (lock, sequence read, sequence and event writes) are shared.
+   * All or nothing: a failing projector commits none of them.
+   */
+  readonly publishMany: (
+    publications: readonly Publication[],
+    options?: { readonly location?: Location.Ref },
+  ) => Effect.Effect<Payload[]>
   readonly subscribe: <D extends Definition>(definition: D) => Stream.Stream<Payload<D>>
   readonly all: () => Stream.Stream<Payload>
   readonly durable: (input: { readonly aggregateID: string; readonly after?: number }) => Stream.Stream<Payload>
@@ -438,6 +461,104 @@ export const layerWith = (options?: LayerOptions) =>
         })
       }
 
+      // documentor: commitDurableEvent's non-replay path for a batch of one aggregate. A separate
+      // copy rather than a shared helper, so upstream changes to that function rebase cleanly.
+      function publishMany(publications: readonly Publication[], options?: { readonly location?: Location.Ref }) {
+        return Effect.gen(function* () {
+          if (publications.length === 0) return [] as Payload[]
+          const serviceLocation = Option.getOrUndefined(yield* Effect.serviceOption(Location.Service))
+          const location =
+            options?.location ??
+            (serviceLocation
+              ? { directory: serviceLocation.directory, workspaceID: serviceLocation.workspaceID }
+              : undefined)
+          let aggregateID: string | undefined
+          const pending = new Array<{ definition: Definition; event: Payload }>()
+          for (const { definition, data } of publications) {
+            const durable = definition.durable
+            const aggregate = durable ? (data as Record<string, unknown>)[durable.aggregate] : undefined
+            if (!durable || typeof aggregate !== "string")
+              return yield* Effect.die(
+                new InvalidDurableEventError({
+                  type: definition.type,
+                  message: "publishMany takes durable events with a string aggregate field only",
+                }),
+              )
+            if (aggregateID !== undefined && aggregate !== aggregateID)
+              return yield* Effect.die(
+                new InvalidDurableEventError({
+                  type: definition.type,
+                  message: `Aggregate mismatch: expected ${aggregateID}, got ${aggregate}`,
+                }),
+              )
+            aggregateID = aggregate
+            pending.push({
+              definition,
+              event: { id: ID.create(), type: definition.type, ...(location ? { location } : {}), data } as Payload,
+            })
+          }
+          const aggregate = aggregateID!
+          const committed = yield* Effect.uninterruptible(
+            Effect.gen(function* () {
+              const events = yield* db
+                .transaction(
+                  () =>
+                    Effect.gen(function* () {
+                      const latest = yield* latestSequence(db, aggregate)
+                      const rows = new Array<typeof EventTable.$inferInsert>()
+                      const events = new Array<Payload>()
+                      for (const [index, { definition, event }] of pending.entries()) {
+                        const durable = definition.durable!
+                        const seq = latest + 1 + index
+                        const encoded = Schema.encodeUnknownSync(definition.data)(event.data) as Record<string, unknown>
+                        const committed = {
+                          ...event,
+                          durable: { aggregateID: aggregate, seq, version: durable.version },
+                        } as Payload
+                        for (const projector of projectors.get(event.type) ?? []) {
+                          yield* projector(committed)
+                        }
+                        rows.push({
+                          id: event.id,
+                          aggregate_id: aggregate,
+                          seq,
+                          type: versionedType(definition.type, durable.version),
+                          data: encoded,
+                        })
+                        events.push(committed)
+                      }
+                      const last = latest + pending.length
+                      yield* db
+                        .insert(EventSequenceTable)
+                        .values([{ aggregate_id: aggregate, seq: last }])
+                        .onConflictDoUpdate({ target: EventSequenceTable.aggregate_id, set: { seq: last } })
+                        .run()
+                        .pipe(Effect.orDie)
+                      for (let start = 0; start < rows.length; start += PUBLISH_MANY_CHUNK) {
+                        yield* db
+                          .insert(EventTable)
+                          .values(rows.slice(start, start + PUBLISH_MANY_CHUNK))
+                          .run()
+                          .pipe(Effect.orDie)
+                      }
+                      return events
+                    }),
+                  { behavior: "immediate" },
+                )
+                .pipe(Effect.orDie)
+              yield* Effect.forEach(pubsub.durable.get(aggregate) ?? [], (wake) => PubSub.publish(wake, undefined), {
+                discard: true,
+              })
+              return events
+            }),
+          )
+          for (const event of committed) {
+            yield* notify(event, true)
+          }
+          return committed
+        })
+      }
+
       function replay(
         event: SerializedEvent,
         options?: { readonly publish?: boolean; readonly ownerID?: string; readonly strictOwner?: boolean },
@@ -621,6 +742,7 @@ export const layerWith = (options?: LayerOptions) =>
 
       return Service.of({
         publish,
+        publishMany,
         subscribe,
         all: streamAll,
         durable,

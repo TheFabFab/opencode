@@ -32,6 +32,22 @@ const layer = Layer.effect(
         })
       })
 
+    // documentor: the same location routing as `publish`, for a batch.
+    const publishMany: EventV2.Interface["publishMany"] = (publications, options) =>
+      Effect.gen(function* () {
+        if (options?.location) return yield* events.publishMany(publications, options)
+        const ctx = yield* InstanceRef
+        if (!ctx) return yield* events.publishMany(publications, options)
+        const workspaceID = yield* WorkspaceRef
+        return yield* events.publishMany(publications, {
+          location: new Location.Info({
+            directory: AbsolutePath.make(ctx.directory),
+            ...(workspaceID ? { workspaceID } : {}),
+            project: { id: Project.ID.make(ctx.project.id), directory: AbsolutePath.make(ctx.worktree) },
+          }),
+        })
+      })
+
     const unsubscribe = yield* events.listen((event) =>
       Effect.gen(function* () {
         const ctx = yield* InstanceRef
@@ -62,7 +78,7 @@ const layer = Layer.effect(
     )
     yield* Effect.addFinalizer(() => unsubscribe)
 
-    return Service.of({ ...events, publish })
+    return Service.of({ ...events, publish, publishMany })
   }),
 )
 
