@@ -10,6 +10,7 @@ import type { ProviderMetadata, Usage } from "@opencode-ai/llm"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EventV2 } from "@opencode-ai/core/event"
 import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
@@ -723,35 +724,54 @@ const layer: Layer.Layer<
         title,
         metadata: structuredClone(original.metadata),
       })
-      const msgs = yield* messages({ sessionID: input.sessionID })
-      const idMap = new Map<string, MessageID>()
-      const target = input.messageID ? msgs.findIndex((msg) => msg.info.id === input.messageID) : msgs.length
+      // documentor: the copy is published as one batch. Against a remote Postgres a single publish
+      // is about nine round trips, so a long chat copied event by event takes tens of seconds. The
+      // batch commits all or nothing; the session created above is removed again if it does not.
+      yield* Effect.gen(function* () {
+        const msgs = yield* messages({ sessionID: input.sessionID })
+        const idMap = new Map<string, MessageID>()
+        const target = input.messageID ? msgs.findIndex((msg) => msg.info.id === input.messageID) : msgs.length
+        const publications = new Array<EventV2.Publication>()
 
-      for (const msg of msgs.slice(0, target < 0 ? msgs.length : target)) {
-        const newID = MessageID.ascending()
-        idMap.set(msg.info.id, newID)
+        for (const msg of msgs.slice(0, target < 0 ? msgs.length : target)) {
+          const newID = MessageID.ascending()
+          idMap.set(msg.info.id, newID)
 
-        const parentID = msg.info.role === "assistant" && msg.info.parentID ? idMap.get(msg.info.parentID) : undefined
-        const cloned = yield* updateMessage({
-          ...msg.info,
-          sessionID: session.id,
-          id: newID,
-          ...(parentID && { parentID }),
-        })
-
-        for (const part of msg.parts) {
-          const p: SessionV1.Part = {
-            ...part,
-            id: PartID.ascending(),
-            messageID: cloned.id,
+          const parentID = msg.info.role === "assistant" && msg.info.parentID ? idMap.get(msg.info.parentID) : undefined
+          const cloned: SessionV1.Info = {
+            ...msg.info,
             sessionID: session.id,
+            id: newID,
+            ...(parentID && { parentID }),
           }
-          if (p.type === "compaction" && p.tail_start_id) {
-            p.tail_start_id = idMap.get(p.tail_start_id)
+          publications.push(
+            EventV2.publication(SessionV1.Event.MessageUpdated, { sessionID: cloned.sessionID, info: cloned }),
+          )
+
+          for (const part of msg.parts) {
+            const p: SessionV1.Part = {
+              ...part,
+              id: PartID.ascending(),
+              messageID: cloned.id,
+              sessionID: session.id,
+            }
+            if (p.type === "compaction" && p.tail_start_id) {
+              p.tail_start_id = idMap.get(p.tail_start_id)
+            }
+            publications.push(
+              EventV2.publication(SessionV1.Event.PartUpdated, {
+                sessionID: p.sessionID,
+                part: structuredClone(p),
+                time: Date.now(),
+              }),
+            )
           }
-          yield* updatePart(p)
         }
-      }
+        yield* events.publishMany(publications)
+      }).pipe(
+        Effect.withSpan("Session.fork.copy"),
+        Effect.onError(() => remove(session.id).pipe(Effect.ignore)),
+      )
       return session
     })
 
