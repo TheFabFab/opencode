@@ -2953,3 +2953,51 @@ it.instance("documentor: a title on demand with an unknown model is an input err
     expect(yield* llm.calls).toBe(0)
   }),
 )
+
+it.instance("documentor: the first turn still titles a chat that carries the dated placeholder", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({})
+    expect(Session.isDefaultTitle(chat.title)).toBe(true)
+    yield* llm.text("answer")
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      parts: [{ type: "text", text: "How do we split the chapters?" }],
+    })
+
+    // The first-turn title runs in a forked fiber; the fake server answers a title request with "E2E Title".
+    const title = yield* pollWithTimeout(
+      Effect.gen(function* () {
+        const current = (yield* sessions.get(chat.id)).title
+        return current === "E2E Title" ? current : undefined
+      }),
+      "the first turn never set the title",
+    )
+    expect(title).toBe("E2E Title")
+  }),
+)
+
+it.instance("documentor: a title on demand reads only the newest messages", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Hello everyone" })
+    for (let i = 1; i <= 25; i++) yield* user(chat.id, `message ${i}`)
+    yield* llm.textMatch(isTitle, "Windowed")
+
+    const result = yield* prompt.title({ sessionID: chat.id, messages: 20 })
+
+    expect(result).toEqual({ title: "Windowed", applied: true })
+    const sent = JSON.stringify((yield* llm.inputs)[0])
+    expect(sent).toMatch(/"message 25"/)
+    expect(sent).toMatch(/"message 6"/)
+    expect(sent).not.toMatch(/"message 5"/)
+    expect(sent).not.toMatch(/"message 1"/)
+  }),
+)
