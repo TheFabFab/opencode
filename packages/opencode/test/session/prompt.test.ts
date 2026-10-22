@@ -2932,3 +2932,24 @@ it.instance("documentor: a title on demand refuses a child session and an empty 
     expect(emptyFailure).toMatchObject({ _tag: "TitleInputError", reason: "no_messages" })
   }),
 )
+
+it.instance("documentor: a title on demand with an unknown model is an input error", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Hello everyone" })
+    yield* user(chat.id, "Hello everyone")
+
+    const failure = yield* prompt
+      .title({
+        sessionID: chat.id,
+        providerID: ProviderV2.ID.make("test"),
+        modelID: ModelV2.ID.make("no-such-model"),
+      })
+      .pipe(Effect.flip)
+
+    expect(failure).toMatchObject({ _tag: "TitleInputError", reason: "unknown_model" })
+    expect(yield* llm.calls).toBe(0)
+  }),
+)

@@ -205,17 +205,10 @@ const layer = Layer.effect(
     }) {
       const ag = yield* agents.get("title")
       if (!ag) return
-      const mdl = yield* (
-        ag.model
-          ? provider.getModel(ag.model.providerID, ag.model.modelID)
-          : Effect.gen(function* () {
-              return (
-                (yield* provider.getSmallModel(input.providerID)) ??
-                (yield* provider.getModel(input.providerID, input.modelID))
-              )
-            })
-      ).pipe(Effect.catchTag("ProviderModelNotFoundError", () => Effect.succeed(undefined)))
-      if (!mdl) return
+      const mdl = ag.model
+        ? yield* provider.getModel(ag.model.providerID, ag.model.modelID)
+        : ((yield* provider.getSmallModel(input.providerID)) ??
+          (yield* provider.getModel(input.providerID, input.modelID)))
       const msgs = input.modelMessages ?? (yield* MessageV2.toModelMessagesEffect(input.context, mdl))
       const text = yield* llm
         .stream({
@@ -300,7 +293,11 @@ const layer = Layer.effect(
         ...(input.providerID && input.modelID
           ? { providerID: input.providerID, modelID: input.modelID }
           : { providerID: newestUser.model.providerID, modelID: newestUser.model.modelID }),
-      })
+      }).pipe(
+        Effect.catchTag("ProviderModelNotFoundError", () =>
+          Effect.fail(new TitleInputError({ reason: "unknown_model" })),
+        ),
+      )
       if (!generated) return { title: session.title, applied: false }
 
       const current = yield* sessions.get(input.sessionID)
@@ -1624,7 +1621,7 @@ export const TitleResult = Schema.Struct({
 export type TitleResult = Schema.Schema.Type<typeof TitleResult>
 
 export class TitleInputError extends Schema.TaggedErrorClass<TitleInputError>()("TitleInputError", {
-  reason: Schema.Literals(["child_session", "no_messages"]),
+  reason: Schema.Literals(["child_session", "no_messages", "unknown_model"]),
 }) {}
 
 export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({
