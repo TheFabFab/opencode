@@ -550,29 +550,39 @@ export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: Ses
   }
 })
 
-export function filterCompacted(msgs: Iterable<WithParts>) {
+/**
+ * Reads messages newest first and keeps what the model still sees: everything
+ * back to the newest completed compaction, plus the tail that compaction
+ * retains. `push` answers false once no older message can matter.
+ */
+function compactedScanner() {
   const result = [] as WithParts[]
   const completed = new Set<string>()
   let retain: MessageID | undefined
-  for (const msg of msgs) {
+  const push = (msg: WithParts): boolean => {
     result.push(msg)
-    if (retain) {
-      if (msg.info.id === retain) break
-      continue
-    }
+    if (retain) return msg.info.id !== retain
     if (msg.info.role === "user" && completed.has(msg.info.id)) {
       const part = msg.parts.find((item): item is CompactionPart => item.type === "compaction")
-      if (!part) continue
-      if (!part.tail_start_id) break
+      if (!part) return true
+      if (!part.tail_start_id) return false
       retain = part.tail_start_id
-      if (msg.info.id === retain) break
-      continue
+      return msg.info.id !== retain
     }
-    if (msg.info.role === "user" && completed.has(msg.info.id) && msg.parts.some((part) => part.type === "compaction"))
-      break
     if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
       completed.add(msg.info.parentID)
+    return true
   }
+  return { push, finish: () => orderCompacted(result) }
+}
+
+export function filterCompacted(msgs: Iterable<WithParts>) {
+  const scanner = compactedScanner()
+  for (const msg of msgs) if (!scanner.push(msg)) break
+  return scanner.finish()
+}
+
+function orderCompacted(result: WithParts[]) {
   result.reverse()
   const compactionIndex = result.findLastIndex(
     (msg) =>
@@ -603,8 +613,34 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   return result
 }
 
+/**
+ * documentor: hands a session's messages to `visit` newest first, a page at a time, until it
+ * answers false or no older message is left. Fails with NotFoundError when the session does not exist.
+ */
+export const scanNewestFirst = Effect.fnUntraced(function* (input: {
+  sessionID: SessionID
+  visit: (message: WithParts) => boolean
+}) {
+  let before: string | undefined
+  while (true) {
+    const next = yield* page({ sessionID: input.sessionID, limit: 50, before })
+    for (let i = next.items.length - 1; i >= 0; i--) {
+      const item = next.items[i]
+      if (item && !input.visit(item)) return
+    }
+    if (!next.more || !next.cursor) return
+    before = next.cursor
+  }
+})
+
+// documentor: reads back to the newest compaction and no further, so a long chat is not
+// loaded in full on every step of the prompt loop.
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
-  return filterCompacted(yield* stream(sessionID))
+  const scanner = compactedScanner()
+  yield* scanNewestFirst({ sessionID, visit: scanner.push }).pipe(
+    Effect.catchIf(NotFoundError.isInstance, () => Effect.void),
+  )
+  return scanner.finish()
 })
 
 // filterCompacted reorders messages for model consumption

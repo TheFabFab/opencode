@@ -277,34 +277,40 @@ const layer = Layer.effect(
       if (!cfg.compaction?.prune) return
       yield* Effect.logInfo("pruning")
 
-      const msgs = yield* session
-        .messages({ sessionID: input.sessionID })
-        .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
-      if (!msgs) return
-
       let total = 0
       let pruned = 0
       const toPrune: SessionV1.ToolPart[] = []
       let turns = 0
 
-      loop: for (let msgIndex = msgs.length - 1; msgIndex >= 0; msgIndex--) {
-        const msg = msgs[msgIndex]
-        if (msg.info.role === "user" && msg.info.answerable !== false) turns++
-        if (turns < 2) continue
-        if (msg.info.role === "assistant" && msg.info.summary) break loop
-        for (let partIndex = msg.parts.length - 1; partIndex >= 0; partIndex--) {
-          const part = msg.parts[partIndex]
-          if (part.type !== "tool") continue
-          if (part.state.status !== "completed") continue
-          if (PRUNE_PROTECTED_TOOLS.includes(part.tool)) continue
-          if (part.state.time.compacted) break loop
-          const estimate = Token.estimate(part.state.output)
-          total += estimate
-          if (total <= PRUNE_PROTECT) continue
-          pruned += estimate
-          toPrune.push(part)
-        }
-      }
+      // documentor: reads newest first and stops where the walk stops, instead of loading the
+      // whole session after every turn.
+      const found = yield* session
+        .scanNewestFirst({
+          sessionID: input.sessionID,
+          visit: (msg) => {
+            if (msg.info.role === "user" && msg.info.answerable !== false) turns++
+            if (turns < 2) return true
+            if (msg.info.role === "assistant" && msg.info.summary) return false
+            for (let partIndex = msg.parts.length - 1; partIndex >= 0; partIndex--) {
+              const part = msg.parts[partIndex]
+              if (part.type !== "tool") continue
+              if (part.state.status !== "completed") continue
+              if (PRUNE_PROTECTED_TOOLS.includes(part.tool)) continue
+              if (part.state.time.compacted) return false
+              const estimate = Token.estimate(part.state.output)
+              total += estimate
+              if (total <= PRUNE_PROTECT) continue
+              pruned += estimate
+              toPrune.push(part)
+            }
+            return true
+          },
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(false)),
+        )
+      if (!found) return
 
       yield* Effect.logInfo("found", { pruned, total })
       if (pruned > PRUNE_MINIMUM) {
