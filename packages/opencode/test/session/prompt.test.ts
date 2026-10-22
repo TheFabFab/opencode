@@ -52,7 +52,7 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { reply, TestLLMServer } from "../lib/llm-server"
+import { isTitleRequest, reply, TestLLMServer, type Match } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -367,6 +367,8 @@ function defer<T>() {
 const succeedVoid = (deferred: Deferred.Deferred<void>) => {
   Effect.runSync(Deferred.succeed(deferred, void 0).pipe(Effect.ignore))
 }
+
+const isTitle: Match = (hit) => isTitleRequest(hit.body)
 
 const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string) {
   const session = yield* Session.Service
@@ -2838,5 +2840,95 @@ it.instance("documentor: a discussion's turn sees every human message prefixed w
     ])
     // The ordinary chat carries authors too, and sends the text unprefixed.
     expect(texts(1)).toEqual(["summarise chapter 3"])
+  }),
+)
+
+it.instance("documentor: a title on demand reads the newest messages and sets the title", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Hello everyone" })
+    yield* user(chat.id, "Hello everyone")
+    yield* user(chat.id, "How do we split the chapters?")
+    yield* user(chat.id, "I can take the assessment part")
+    yield* llm.textMatch(isTitle, "Chapter split")
+
+    const result = yield* prompt.title({ sessionID: chat.id, ifTitle: "Hello everyone" })
+
+    expect(result).toEqual({ title: "Chapter split", applied: true })
+    expect((yield* sessions.get(chat.id)).title).toBe("Chapter split")
+    expect(yield* llm.calls).toBe(1)
+    const sent = JSON.stringify((yield* llm.inputs)[0])
+    expect(sent).toContain("How do we split the chapters?")
+    expect(sent).toContain("I can take the assessment part")
+    expect(sent).toContain("Generate a title for this conversation")
+  }),
+)
+
+it.instance("documentor: a title on demand with a stale ifTitle calls no model", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Renamed by Anna" })
+    yield* user(chat.id, "Hello everyone")
+
+    const result = yield* prompt.title({ sessionID: chat.id, ifTitle: "Hello everyone" })
+
+    expect(result).toEqual({ title: "Renamed by Anna", applied: false })
+    expect(yield* llm.calls).toBe(0)
+  }),
+)
+
+it.instance("documentor: a title on demand leaves a session renamed during the call alone", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Hello everyone" })
+    yield* user(chat.id, "Hello everyone")
+    // The rename lands while the model answers: hold the answer until the title is set from outside.
+    const renamed = defer<void>()
+    yield* llm.pushMatch(isTitle, reply().wait(renamed.promise).text("Chapter split").stop())
+    const running = yield* prompt.title({ sessionID: chat.id, ifTitle: "Hello everyone" }).pipe(Effect.forkScoped)
+    yield* llm.wait(1)
+    yield* sessions.setTitle({ sessionID: chat.id, title: "Renamed by Anna" })
+    renamed.resolve()
+
+    const result = yield* Fiber.join(running)
+
+    expect(result).toEqual({ title: "Chapter split", applied: false })
+    expect((yield* sessions.get(chat.id)).title).toBe("Renamed by Anna")
+  }),
+)
+
+it.instance("documentor: an empty title answer writes nothing", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Hello everyone" })
+    yield* user(chat.id, "Hello everyone")
+    yield* llm.textMatch(isTitle, "<think>nothing useful</think>")
+
+    const result = yield* prompt.title({ sessionID: chat.id })
+
+    expect(result).toEqual({ title: "Hello everyone", applied: false })
+    expect((yield* sessions.get(chat.id)).title).toBe("Hello everyone")
+  }),
+)
+
+it.instance("documentor: a title on demand refuses a child session and an empty session", () =>
+  Effect.gen(function* () {
+    yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const parent = yield* sessions.create({ title: "Parent" })
+    const child = yield* sessions.create({ title: "Child", parentID: parent.id })
+    const childFailure = yield* prompt.title({ sessionID: child.id }).pipe(Effect.flip)
+    expect(childFailure).toMatchObject({ _tag: "TitleInputError", reason: "child_session" })
+    const emptyFailure = yield* prompt.title({ sessionID: parent.id }).pipe(Effect.flip)
+    expect(emptyFailure).toMatchObject({ _tag: "TitleInputError", reason: "no_messages" })
   }),
 )

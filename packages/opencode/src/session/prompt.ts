@@ -10,7 +10,7 @@ import { Session } from "./session"
 import { Agent } from "../agent/agent"
 import { Provider } from "@/provider/provider"
 
-import { type Tool as AITool, tool, jsonSchema } from "ai"
+import { type ModelMessage, type Tool as AITool, tool, jsonSchema } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
@@ -93,6 +93,10 @@ function formatMcpResourceBytes(value: number) {
   return `${Math.ceil(value / (1024 * 1024))} MB`
 }
 
+function isRealUserMessage(m: SessionV1.WithParts) {
+  return m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic)
+}
+
 function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   // cleanup() marks abandoned tool_use blocks this way after retries/aborts.
   // They are not pending work and must not trigger an assistant-prefill request.
@@ -102,6 +106,7 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
+  readonly title: (input: TitleInput) => Effect.Effect<TitleResult, Session.NotFound | TitleInputError>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -190,42 +195,32 @@ const layer = Layer.effect(
       return parts
     })
 
-    const title = Effect.fn("SessionPrompt.ensureTitle")(function* (input: {
+    const generateTitle = Effect.fn("SessionPrompt.generateTitle")(function* (input: {
       session: Session.Info
-      history: SessionV1.WithParts[]
+      user: SessionV1.User
+      context: SessionV1.WithParts[]
+      modelMessages?: ModelMessage[]
       providerID: ProviderV2.ID
       modelID: ModelV2.ID
     }) {
-      if (input.session.parentID) return
-      if (!Session.isDefaultTitle(input.session.title)) return
-
-      const real = (m: SessionV1.WithParts) =>
-        m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic)
-      const idx = input.history.findIndex(real)
-      if (idx === -1) return
-      if (input.history.filter(real).length !== 1) return
-
-      const context = input.history.slice(0, idx + 1)
-      const firstUser = context[idx]
-      if (!firstUser || firstUser.info.role !== "user") return
-      const firstInfo = firstUser.info
-
-      const subtasks = firstUser.parts.filter((p): p is SessionV1.SubtaskPart => p.type === "subtask")
-      const onlySubtasks = subtasks.length > 0 && firstUser.parts.every((p) => p.type === "subtask")
-
       const ag = yield* agents.get("title")
       if (!ag) return
-      const mdl = ag.model
-        ? yield* provider.getModel(ag.model.providerID, ag.model.modelID)
-        : ((yield* provider.getSmallModel(input.providerID)) ??
-          (yield* provider.getModel(input.providerID, input.modelID)))
-      const msgs = onlySubtasks
-        ? [{ role: "user" as const, content: subtasks.map((p) => p.prompt).join("\n") }]
-        : yield* MessageV2.toModelMessagesEffect(context, mdl)
+      const mdl = yield* (
+        ag.model
+          ? provider.getModel(ag.model.providerID, ag.model.modelID)
+          : Effect.gen(function* () {
+              return (
+                (yield* provider.getSmallModel(input.providerID)) ??
+                (yield* provider.getModel(input.providerID, input.modelID))
+              )
+            })
+      ).pipe(Effect.catchTag("ProviderModelNotFoundError", () => Effect.succeed(undefined)))
+      if (!mdl) return
+      const msgs = input.modelMessages ?? (yield* MessageV2.toModelMessagesEffect(input.context, mdl))
       const text = yield* llm
         .stream({
           agent: ag,
-          user: firstInfo,
+          user: input.user,
           system: [],
           small: true,
           tools: {},
@@ -246,10 +241,72 @@ const layer = Layer.effect(
         .map((line) => line.trim())
         .find((line) => line.length > 0)
       if (!cleaned) return
-      const t = cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
+      return cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
+    })
+
+    const ensureTitle = Effect.fn("SessionPrompt.ensureTitle")(function* (input: {
+      session: Session.Info
+      history: SessionV1.WithParts[]
+      providerID: ProviderV2.ID
+      modelID: ModelV2.ID
+    }) {
+      if (input.session.parentID) return
+      if (!Session.isDefaultTitle(input.session.title)) return
+
+      const idx = input.history.findIndex(isRealUserMessage)
+      if (idx === -1) return
+      if (input.history.filter(isRealUserMessage).length !== 1) return
+
+      const context = input.history.slice(0, idx + 1)
+      const firstUser = context[idx]
+      if (!firstUser || firstUser.info.role !== "user") return
+      const firstInfo = firstUser.info
+
+      const subtasks = firstUser.parts.filter((p): p is SessionV1.SubtaskPart => p.type === "subtask")
+      const onlySubtasks = subtasks.length > 0 && firstUser.parts.every((p) => p.type === "subtask")
+
+      const t = yield* generateTitle({
+        session: input.session,
+        user: firstInfo,
+        context,
+        ...(onlySubtasks
+          ? { modelMessages: [{ role: "user", content: subtasks.map((p) => p.prompt).join("\n") }] }
+          : {}),
+        providerID: input.providerID,
+        modelID: input.modelID,
+      })
+      if (!t) return
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
         .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
+    })
+
+    const title: Interface["title"] = Effect.fn("SessionPrompt.title")(function* (input) {
+      const session = yield* sessions.get(input.sessionID)
+      if (session.parentID) return yield* new TitleInputError({ reason: "child_session" })
+      if (input.ifTitle !== undefined && session.title !== input.ifTitle)
+        return { title: session.title, applied: false }
+
+      const context = (yield* sessions.messages({ sessionID: input.sessionID }))
+        .filter((m) => m.info.role === "assistant" || isRealUserMessage(m))
+        .slice(-(input.messages ?? 20))
+      const newestUser = context.findLast((m) => m.info.role === "user")?.info
+      if (!newestUser || newestUser.role !== "user") return yield* new TitleInputError({ reason: "no_messages" })
+
+      const generated = yield* generateTitle({
+        session,
+        user: newestUser,
+        context,
+        ...(input.providerID && input.modelID
+          ? { providerID: input.providerID, modelID: input.modelID }
+          : { providerID: newestUser.model.providerID, modelID: newestUser.model.modelID }),
+      })
+      if (!generated) return { title: session.title, applied: false }
+
+      const current = yield* sessions.get(input.sessionID)
+      if (input.ifTitle !== undefined && current.title !== input.ifTitle) return { title: generated, applied: false }
+      yield* sessions.setTitle({ sessionID: input.sessionID, title: generated })
+      return { title: generated, applied: true }
     })
 
     const handleSubtask = Effect.fn("SessionPrompt.handleSubtask")(function* (input: {
@@ -1157,7 +1214,7 @@ const layer = Layer.effect(
 
           step++
           if (step === 1)
-            yield* title({
+            yield* ensureTitle({
               session,
               modelID: lastUser.model.modelID,
               providerID: lastUser.model.providerID,
@@ -1511,6 +1568,7 @@ const layer = Layer.effect(
     return Service.of({
       cancel,
       prompt,
+      title,
       loop,
       shell,
       command,
@@ -1549,6 +1607,25 @@ export const PromptInput = Schema.Struct({
   ),
 })
 export type PromptInput = Schema.Schema.Type<typeof PromptInput>
+
+export const TitleInput = Schema.Struct({
+  sessionID: SessionID,
+  providerID: Schema.optional(ProviderV2.ID),
+  modelID: Schema.optional(ModelV2.ID),
+  messages: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+  ifTitle: Schema.optional(Schema.String),
+})
+export type TitleInput = Schema.Schema.Type<typeof TitleInput>
+
+export const TitleResult = Schema.Struct({
+  title: Schema.String,
+  applied: Schema.Boolean,
+})
+export type TitleResult = Schema.Schema.Type<typeof TitleResult>
+
+export class TitleInputError extends Schema.TaggedErrorClass<TitleInputError>()("TitleInputError", {
+  reason: Schema.Literals(["child_session", "no_messages"]),
+}) {}
 
 export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({
   sessionID: SessionID,
