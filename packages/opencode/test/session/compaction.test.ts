@@ -408,6 +408,11 @@ function compactionContext(context: string) {
   })
 }
 
+/** The summariser request's <conversation> section: what it summarises. */
+const conversationOf = (captured: string) => captured.split("<conversation>")[1]?.split("</conversation>")[0] ?? ""
+/** The summariser request's <retained> section: the tail it reads but keeps verbatim. */
+const retainedOf = (captured: string) => captured.split("<retained>")[1]?.split("</retained>")[0] ?? ""
+
 function compactionCarry(carry: string, seen: SessionV1.WithParts[][]) {
   return Layer.mock(Plugin.Service)({
     trigger: <Name extends string, Input, Output>(name: Name, input: Input, output: Output) => {
@@ -1231,7 +1236,8 @@ describe("session.compaction.process", () => {
         expect(part?.type).toBe("compaction")
         expect(part?.tail_start_id).toBe(keep.id)
         expect(captured).toContain("zzzz")
-        expect(captured).not.toContain("keep tail")
+        expect(conversationOf(captured)).not.toContain("keep tail")
+        expect(retainedOf(captured)).toContain("keep tail")
 
         const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
         expect(filtered.map((msg) => msg.info.id).slice(0, 3)).toEqual([parent!, expect.any(String), keep.id])
@@ -1550,8 +1556,9 @@ describe("session.compaction.process", () => {
           captured.indexOf("Create a new anchored summary"),
         )
         expect(captured).toContain("[User]: older context")
-        expect(captured).not.toContain("keep this turn")
-        expect(captured).not.toContain("and this one too")
+        expect(conversationOf(captured)).not.toContain("keep this turn")
+        expect(conversationOf(captured)).not.toContain("and this one too")
+        expect(retainedOf(captured)).toContain("keep this turn")
         expect(captured).not.toContain("What did we do so far?")
       }).pipe(
         withCompaction({
