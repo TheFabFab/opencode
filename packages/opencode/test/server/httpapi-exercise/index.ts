@@ -1597,6 +1597,34 @@ const scenarios: Scenario[] = [
       "status",
     ),
   http.protected
+    .post("/session/{sessionID}/title", "session.title")
+    .mutating()
+    .withLlm()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Title session" })
+        yield* ctx.message(session.id, { text: "How do we split the chapters?" })
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/title", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { providerID: "test", modelID: "test-model", ifTitle: "Title session" },
+    }))
+    .jsonEffect(
+      200,
+      (body, ctx) =>
+        Effect.gen(function* () {
+          object(body)
+          check(body.title === "E2E Title" && body.applied === true, "title should generate and apply the title")
+          const session = yield* ctx.sessionGet(ctx.state.id)
+          check(session?.title === "E2E Title", "title should store the generated title")
+          yield* ctx.llmWait(1)
+        }),
+      "status",
+    ),
+  http.protected
     .post("/session/{sessionID}/revert", "session.revert")
     .mutating()
     .seeded((ctx) =>
@@ -1741,6 +1769,7 @@ const llmScenarios = new Set([
   "session.prompt_async",
   "session.command",
   "session.summarize",
+  "session.title",
 ])
 
 const main = Effect.gen(function* () {
