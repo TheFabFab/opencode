@@ -1131,6 +1131,10 @@ describe("documentor: session title", () => {
         const response = yield* postTitle(dir, SessionID.make("ses_missing"), {})
 
         expect(response.status).toBe(404)
+        expect(yield* responseJson(response)).toEqual({
+          name: "NotFoundError",
+          data: { message: "Session not found: ses_missing" },
+        })
       }),
     ),
   )
@@ -1146,9 +1150,11 @@ describe("documentor: session title", () => {
 
         const emptyResponse = yield* postTitle(dir, empty.id, {})
         expect(emptyResponse.status).toBe(400)
+        expect(yield* responseJson(emptyResponse)).toEqual({ _tag: "BadRequest" })
 
         const childResponse = yield* postTitle(dir, child.id, {})
         expect(childResponse.status).toBe(400)
+        expect(yield* responseJson(childResponse)).toEqual({ _tag: "BadRequest" })
       }),
     ),
   )
@@ -1161,11 +1167,21 @@ describe("documentor: session title", () => {
         const session = yield* createSession({ title: "Hello everyone" }).pipe(provideInstanceEffect(dir))
         yield* createTextMessage(session.id, "Hello everyone").pipe(provideInstanceEffect(dir))
 
-        const tooFew = yield* postTitle(dir, session.id, { messages: 0 })
-        expect(tooFew.status).toBe(400)
+        const model = { providerID: "test", modelID: "test-model" }
 
-        const tooMany = yield* postTitle(dir, session.id, { messages: 51 })
+        const tooFew = yield* postTitle(dir, session.id, { ...model, messages: 0 })
+        expect(tooFew.status).toBe(400)
+        expect(yield* responseJson(tooFew)).toEqual({
+          name: "BadRequest",
+          data: { kind: "Payload", message: 'Expected a value between 1 and 50, got 0\n  at ["messages"]' },
+        })
+
+        const tooMany = yield* postTitle(dir, session.id, { ...model, messages: 51 })
         expect(tooMany.status).toBe(400)
+        expect(yield* responseJson(tooMany)).toEqual({
+          name: "BadRequest",
+          data: { kind: "Payload", message: 'Expected a value between 1 and 50, got 51\n  at ["messages"]' },
+        })
       }),
     ),
   )
