@@ -34,7 +34,7 @@ import * as DateTime from "effect/DateTime"
 import { eq } from "drizzle-orm"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideInstanceEffect, TestInstance, tmpdirScoped } from "../fixture/fixture"
-import { isTitleRequest, TestLLMServer } from "../lib/llm-server"
+import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -1101,7 +1101,7 @@ describe("documentor: session title", () => {
     live(
       Effect.gen(function* () {
         const llm = yield* TestLLMServer
-        yield* llm.textMatch((hit) => isTitleRequest(hit.body), "Chapter split")
+        yield* llm.textTitle("Chapter split")
 
         const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
         const session = yield* createSession({ title: "Hello everyone" }).pipe(provideInstanceEffect(dir))
@@ -1155,6 +1155,27 @@ describe("documentor: session title", () => {
         const childResponse = yield* postTitle(dir, child.id, {})
         expect(childResponse.status).toBe(400)
         expect(yield* responseJson(childResponse)).toEqual({ _tag: "BadRequest" })
+      }),
+    ),
+  )
+
+  it.live("documentor: rejects a providerID without a modelID and a modelID without a providerID", () =>
+    live(
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+        const session = yield* createSession({ title: "Hello everyone" }).pipe(provideInstanceEffect(dir))
+        yield* createTextMessage(session.id, "Hello everyone").pipe(provideInstanceEffect(dir))
+
+        for (const body of [{ providerID: "test" }, { modelID: "test-model" }]) {
+          const response = yield* postTitle(dir, session.id, body)
+          expect(response.status).toBe(400)
+          expect(yield* responseJson(response)).toEqual({
+            name: "BadRequest",
+            data: { kind: "Payload", message: "Expected providerID and modelID together, or neither" },
+          })
+        }
+        expect(yield* llm.calls).toBe(0)
       }),
     ),
   )

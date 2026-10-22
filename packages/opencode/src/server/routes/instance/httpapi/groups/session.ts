@@ -67,7 +67,9 @@ export const SummarizePayload = Schema.Struct({
   modelID: ModelV2.ID,
   auto: Schema.optional(Schema.Boolean),
 })
-export const TitlePayload = Schema.Struct(Struct.omit(SessionPrompt.TitleInput.fields, ["sessionID"]))
+export const TitlePayload = Schema.Struct(Struct.omit(SessionPrompt.TitleInput.fields, ["sessionID"])).check(
+  SessionPrompt.titleModelPair,
+)
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))

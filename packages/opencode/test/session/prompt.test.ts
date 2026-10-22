@@ -52,7 +52,7 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { isTitleRequest, reply, TestLLMServer, type Match } from "../lib/llm-server"
+import { reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -368,16 +368,14 @@ const succeedVoid = (deferred: Deferred.Deferred<void>) => {
   Effect.runSync(Deferred.succeed(deferred, void 0).pipe(Effect.ignore))
 }
 
-const isTitle: Match = (hit) => isTitleRequest(hit.body)
-
-const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string) {
+const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string, model = ref) {
   const session = yield* Session.Service
   const msg = yield* session.updateMessage({
     id: MessageID.ascending(),
     role: "user",
     sessionID,
     agent: "build",
-    model: ref,
+    model,
     time: { created: Date.now() },
   })
   yield* session.updatePart({
@@ -2852,7 +2850,7 @@ it.instance("documentor: a title on demand reads the newest messages and sets th
     yield* user(chat.id, "Hello everyone")
     yield* user(chat.id, "How do we split the chapters?")
     yield* user(chat.id, "I can take the assessment part")
-    yield* llm.textMatch(isTitle, "Chapter split")
+    yield* llm.textTitle("Chapter split")
 
     const result = yield* prompt.title({ sessionID: chat.id, ifTitle: "Hello everyone" })
 
@@ -2890,7 +2888,7 @@ it.instance("documentor: a title on demand leaves a session renamed during the c
     yield* user(chat.id, "Hello everyone")
     // The rename lands while the model answers: hold the answer until the title is set from outside.
     const renamed = defer<void>()
-    yield* llm.pushMatch(isTitle, reply().wait(renamed.promise).text("Chapter split").stop())
+    yield* llm.pushTitle(reply().wait(renamed.promise).text("Chapter split").stop())
     const running = yield* prompt.title({ sessionID: chat.id, ifTitle: "Hello everyone" }).pipe(Effect.forkScoped)
     yield* llm.wait(1)
     yield* sessions.setTitle({ sessionID: chat.id, title: "Renamed by Anna" })
@@ -2910,7 +2908,7 @@ it.instance("documentor: an empty title answer writes nothing", () =>
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Hello everyone" })
     yield* user(chat.id, "Hello everyone")
-    yield* llm.textMatch(isTitle, "<think>nothing useful</think>")
+    yield* llm.textTitle("<think>nothing useful</think>")
 
     const result = yield* prompt.title({ sessionID: chat.id })
 
@@ -2989,7 +2987,7 @@ it.instance("documentor: a title on demand reads only the newest messages", () =
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Hello everyone" })
     for (let i = 1; i <= 25; i++) yield* user(chat.id, `message ${i}`)
-    yield* llm.textMatch(isTitle, "Windowed")
+    yield* llm.textTitle("Windowed")
 
     const result = yield* prompt.title({ sessionID: chat.id, messages: 20 })
 
@@ -2999,5 +2997,56 @@ it.instance("documentor: a title on demand reads only the newest messages", () =
     expect(sent).toMatch(/"message 6"/)
     expect(sent).not.toMatch(/"message 5"/)
     expect(sent).not.toMatch(/"message 1"/)
+  }),
+)
+
+it.instance("documentor: a title on demand falls back to the default model when the chat's model is gone", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Hello everyone" })
+    yield* user(chat.id, "How do we split the chapters?", { ...ref, modelID: ModelV2.ID.make("retired-model") })
+    yield* llm.textTitle("Chapter split")
+
+    const result = yield* prompt.title({ sessionID: chat.id })
+
+    expect(result).toEqual({ title: "Chapter split", applied: true })
+    expect(yield* llm.calls).toBe(1)
+    expect((yield* llm.inputs)[0]?.model).toBe("test-model")
+  }),
+)
+
+it.instance("documentor: a title on demand with a window of one titles a chat that ends with an answer", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Hello everyone" })
+    yield* seed(chat.id)
+    yield* llm.textTitle("Greetings")
+
+    const result = yield* prompt.title({ sessionID: chat.id, messages: 1 })
+
+    expect(result).toEqual({ title: "Greetings", applied: true })
+    const sent = JSON.stringify((yield* llm.inputs)[0])
+    expect(sent).toContain("hi there")
+    expect(sent).not.toContain('"hello"')
+  }),
+)
+
+it.instance("documentor: a title on demand without a title agent is a defect, not an unapplied title", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), agent: { title: { disable: true } } }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Hello everyone" })
+    yield* user(chat.id, "How do we split the chapters?")
+
+    const exit = yield* prompt.title({ sessionID: chat.id }).pipe(Effect.exit)
+
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
+    expect(yield* llm.calls).toBe(0)
+    expect((yield* sessions.get(chat.id)).title).toBe("Hello everyone")
   }),
 )
