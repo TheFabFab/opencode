@@ -374,20 +374,33 @@ const layer = Layer.effect(
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
       const previousSummary = prior.at(-1)?.summary
-      const selected = yield* select({
-        messages: history.filter((_, index) => !hidden.has(index)),
-        cfg,
-        model,
-      })
-      // Allow plugins to inject context or replace compaction prompt.
+      const visible = history.filter((_, index) => !hidden.has(index))
+      const selected = yield* select({ messages: visible, cfg, model })
+      // The retained tail is every message created from its start on, an earlier compaction's message
+      // included, though the model sees that one before the tail; only the rest leaves the model's view.
+      const tail = selected.tail_start_id ? history.find((m) => m.info.id === selected.tail_start_id) : undefined
+      const leaving = tail
+        ? history.filter(
+            (m) =>
+              m.info.time.created < tail.info.time.created ||
+              (m.info.time.created === tail.info.time.created && m.info.id < tail.info.id),
+          )
+        : history
+      // Allow plugins to inject context, replace the compaction prompt, or carry text past it.
       const compacting = yield* plugin.trigger(
         "experimental.session.compacting",
-        { sessionID: input.sessionID },
-        { context: [], prompt: undefined },
+        { sessionID: input.sessionID, messages: leaving },
+        { context: [], prompt: undefined, carry: [] as string[] },
       )
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
       const conversation = msgs
+        .map((m) => serialize(m, attributeAuthors))
+        .filter(Boolean)
+        .join("\n\n")
+      // documentor: the summariser also reads the tail it keeps, so its state never predates that tail.
+      const retained = visible
+        .slice(selected.head.length)
         .map((m) => serialize(m, attributeAuthors))
         .filter(Boolean)
         .join("\n\n")
@@ -397,6 +410,7 @@ const layer = Layer.effect(
           buildPrompt({
             previousSummary,
             context: [conversation],
+            retained,
           }),
           ...compacting.context,
         ]
@@ -476,6 +490,24 @@ const layer = Layer.effect(
           ...compactionPart,
           tail_start_id: selected.tail_start_id,
         })
+      }
+
+      // documentor: carried text sits on the compaction's user message, which the model reads before the
+      // summary and which no later summariser is shown, so it survives every compaction verbatim.
+      if (result === "continue" && compactionPart) {
+        for (const text of compacting.carry ?? []) {
+          if (!text) continue
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: input.parentID,
+            sessionID: input.sessionID,
+            type: "text",
+            synthetic: true,
+            metadata: { compaction_carry: true },
+            text,
+            time: { start: Date.now(), end: Date.now() },
+          })
+        }
       }
 
       if (result === "continue" && input.auto) {

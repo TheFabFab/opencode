@@ -157,17 +157,29 @@ const select = (
   }
 }
 
-export const buildPrompt = (input: { readonly previousSummary?: string; readonly context: readonly string[] }) => {
+// documentor: the retained tail is shown, not summarised, so the summary's state is the state after it.
+const retainedSection = (retained: string) =>
+  `These messages come after the <conversation> and stay in the context verbatim, right after your summary:\n\n<retained>\n${retained}\n</retained>\n\n${RETAINED_INSTRUCTIONS}`
+const RETAINED_INSTRUCTIONS = `Do not summarise the <retained> messages. Where they change the state the summary describes - a background task finished, an action was retried or failed, a decision was made - write the summary's "Work State" and "Next Move" as the state after them.`
+
+export const buildPrompt = (input: {
+  readonly previousSummary?: string
+  readonly context: readonly string[]
+  readonly retained?: string
+}) => {
   const conversation = `Here is the conversation so far:\n\n<conversation>\n${input.context.join("\n\n")}\n</conversation>`
+  const retained = input.retained ? [retainedSection(input.retained)] : []
   if (!input.previousSummary)
     return [
       conversation,
+      ...retained,
       "Create a new anchored summary from the conversation history in the <conversation> tags above so another coding agent can continue the work.",
       SUMMARY_TEMPLATE,
     ].join("\n\n")
   return [
     conversation,
     `Here is the summary of the conversation before the <conversation> above:\n\n<prior-summary>\n${input.previousSummary}\n</prior-summary>`,
+    ...retained,
     SUMMARY_UPDATE_INSTRUCTIONS,
     SUMMARY_TEMPLATE,
   ].join("\n\n")
