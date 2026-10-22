@@ -215,6 +215,8 @@ import type {
   SessionStatusResponses,
   SessionSummarizeErrors,
   SessionSummarizeResponses,
+  SessionTitleErrors,
+  SessionTitleResponses,
   SessionTodoErrors,
   SessionTodoResponses,
   SessionUnrevertErrors,
@@ -4084,6 +4086,51 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionSummarizeResponses, SessionSummarizeErrors, ThrowOnError>({
       url: "/session/{sessionID}/summarize",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Title session
+   *
+   * Generate a title for the session from its newest messages, optionally only while its title still equals ifTitle.
+   */
+  public title<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      providerID?: string
+      modelID?: string
+      messages?: number
+      ifTitle?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "modelID" },
+            { in: "body", key: "messages" },
+            { in: "body", key: "ifTitle" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionTitleResponses, SessionTitleErrors, ThrowOnError>({
+      url: "/session/{sessionID}/title",
       ...options,
       ...params,
       headers: {

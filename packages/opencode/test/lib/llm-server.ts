@@ -20,7 +20,7 @@ type Hit = {
   body: Record<string, unknown>
 }
 
-type Match = (hit: Hit) => boolean
+export type Match = (hit: Hit) => boolean
 
 type Queue = {
   item: Item
@@ -604,7 +604,7 @@ function hit(url: string, body: unknown) {
   } satisfies Hit
 }
 
-function isTitleRequest(body: unknown): boolean {
+export function isTitleRequest(body: unknown): boolean {
   if (!body || typeof body !== "object") return false
   return JSON.stringify(body).includes("Generate a title for this conversation")
 }
@@ -661,8 +661,11 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         yield* Effect.forEach(ready, (item) => Deferred.succeed(item.ready, void 0))
       })
 
-      const pull = (hit: Hit) => {
-        const index = list.findIndex((entry) => !entry.match || entry.match(hit))
+      // A title request takes only an entry queued with a match for it; unmatched entries are left for the turn.
+      const pull = (hit: Hit, title: boolean) => {
+        const index = title
+          ? list.findIndex((entry) => entry.match && entry.match(hit))
+          : list.findIndex((entry) => !entry.match || entry.match(hit))
         if (index === -1) return
         const first = list[index]
         list = [...list.slice(0, index), ...list.slice(index + 1)]
@@ -673,14 +676,15 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         const req = yield* HttpServerRequest.HttpServerRequest
         const body = yield* req.json.pipe(Effect.orElseSucceed(() => ({})))
         const current = hit(req.originalUrl, body)
-        if (isTitleRequest(body)) {
+        const title = isTitleRequest(body)
+        const next = pull(current, title)
+        if (title && !next) {
           hits = [...hits, current]
           yield* notify()
           const auto: Sse = { type: "sse", head: [role()], tail: [textLine("E2E Title"), finishLine("stop")] }
           if (mode === "responses") return send(responses(auto, modelFrom(body)))
           return send(auto)
         }
-        const next = pull(current)
         if (!next) {
           hits = [...hits, current]
           yield* notify()

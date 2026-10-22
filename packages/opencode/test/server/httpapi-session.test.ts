@@ -34,7 +34,7 @@ import * as DateTime from "effect/DateTime"
 import { eq } from "drizzle-orm"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideInstanceEffect, TestInstance, tmpdirScoped } from "../fixture/fixture"
-import { TestLLMServer } from "../lib/llm-server"
+import { isTitleRequest, TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -1083,5 +1083,106 @@ describe("session HttpApi", () => {
         })
       }),
     { git: true, config: { formatter: false, lsp: false } },
+  )
+})
+
+describe("documentor: session title", () => {
+  const live = (effect: Effect.Effect<void, unknown, any>) =>
+    effect.pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)))
+
+  const postTitle = (dir: string, sessionID: SessionIDType, body: Record<string, unknown>) =>
+    request(`${pathFor(SessionPaths.title, { sessionID })}?directory=${encodeURIComponent(dir)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+
+  it.live("documentor: generates and applies a title from the newest messages", () =>
+    live(
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        yield* llm.textMatch((hit) => isTitleRequest(hit.body), "Chapter split")
+
+        const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+        const session = yield* createSession({ title: "Hello everyone" }).pipe(provideInstanceEffect(dir))
+        yield* createTextMessage(session.id, "Hello everyone").pipe(provideInstanceEffect(dir))
+        yield* createTextMessage(session.id, "How do we split the chapters?").pipe(provideInstanceEffect(dir))
+
+        const response = yield* postTitle(dir, session.id, {
+          providerID: "test",
+          modelID: "test-model",
+          ifTitle: "Hello everyone",
+        })
+
+        expect(response.status).toBe(200)
+        expect(yield* responseJson(response)).toEqual({ title: "Chapter split", applied: true })
+        const stored = yield* Session.use.get(session.id).pipe(provideInstanceEffect(dir), Effect.orDie)
+        expect(stored.title).toBe("Chapter split")
+      }),
+    ),
+  )
+
+  it.live("documentor: answers 404 for an unknown session", () =>
+    live(
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+
+        const response = yield* postTitle(dir, SessionID.make("ses_missing"), {})
+
+        expect(response.status).toBe(404)
+        expect(yield* responseJson(response)).toEqual({
+          name: "NotFoundError",
+          data: { message: "Session not found: ses_missing" },
+        })
+      }),
+    ),
+  )
+
+  it.live("documentor: answers 400 for a session without messages and for a child session", () =>
+    live(
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+        const empty = yield* createSession({ title: "Empty" }).pipe(provideInstanceEffect(dir))
+        const child = yield* createSession({ parentID: empty.id }).pipe(provideInstanceEffect(dir))
+        yield* createTextMessage(child.id, "How do we split the chapters?").pipe(provideInstanceEffect(dir))
+
+        const emptyResponse = yield* postTitle(dir, empty.id, {})
+        expect(emptyResponse.status).toBe(400)
+        expect(yield* responseJson(emptyResponse)).toEqual({ _tag: "BadRequest" })
+
+        const childResponse = yield* postTitle(dir, child.id, {})
+        expect(childResponse.status).toBe(400)
+        expect(yield* responseJson(childResponse)).toEqual({ _tag: "BadRequest" })
+      }),
+    ),
+  )
+
+  it.live("documentor: rejects a messages count outside 1..50", () =>
+    live(
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+        const session = yield* createSession({ title: "Hello everyone" }).pipe(provideInstanceEffect(dir))
+        yield* createTextMessage(session.id, "Hello everyone").pipe(provideInstanceEffect(dir))
+
+        const model = { providerID: "test", modelID: "test-model" }
+
+        const tooFew = yield* postTitle(dir, session.id, { ...model, messages: 0 })
+        expect(tooFew.status).toBe(400)
+        expect(yield* responseJson(tooFew)).toEqual({
+          name: "BadRequest",
+          data: { kind: "Payload", message: 'Expected a value between 1 and 50, got 0\n  at ["messages"]' },
+        })
+
+        const tooMany = yield* postTitle(dir, session.id, { ...model, messages: 51 })
+        expect(tooMany.status).toBe(400)
+        expect(yield* responseJson(tooMany)).toEqual({
+          name: "BadRequest",
+          data: { kind: "Payload", message: 'Expected a value between 1 and 50, got 51\n  at ["messages"]' },
+        })
+      }),
+    ),
   )
 })
