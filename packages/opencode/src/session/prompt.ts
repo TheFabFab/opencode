@@ -196,6 +196,7 @@ const layer = Layer.effect(
     })
 
     const generateTitle = Effect.fn("SessionPrompt.generateTitle")(function* (input: {
+      agent: Agent.Info
       session: Session.Info
       user: SessionV1.User
       context: SessionV1.WithParts[]
@@ -203,8 +204,7 @@ const layer = Layer.effect(
       providerID: ProviderV2.ID
       modelID: ModelV2.ID
     }) {
-      const ag = yield* agents.get("title")
-      if (!ag) return
+      const ag = input.agent
       const mdl = ag.model
         ? yield* provider.getModel(ag.model.providerID, ag.model.modelID)
         : ((yield* provider.getSmallModel(input.providerID)) ??
@@ -258,7 +258,10 @@ const layer = Layer.effect(
       const subtasks = firstUser.parts.filter((p): p is SessionV1.SubtaskPart => p.type === "subtask")
       const onlySubtasks = subtasks.length > 0 && firstUser.parts.every((p) => p.type === "subtask")
 
+      const agent = yield* agents.get("title")
+      if (!agent) return
       const t = yield* generateTitle({
+        agent,
         session: input.session,
         user: firstInfo,
         context,
@@ -279,25 +282,40 @@ const layer = Layer.effect(
       if (session.parentID) return yield* new TitleInputError({ reason: "child_session" })
       if (input.ifTitle !== undefined && session.title !== input.ifTitle)
         return { title: session.title, applied: false }
+      const agent = yield* agents.get("title")
+      if (!agent) return yield* Effect.die(new Error("No title agent is configured"))
 
-      const context = (yield* sessions.messages({ sessionID: input.sessionID }))
-        .filter((m) => m.info.role === "assistant" || isRealUserMessage(m))
-        .slice(-(input.messages ?? 20))
-      const newestUser = context.findLast((m) => m.info.role === "user")?.info
-      if (!newestUser || newestUser.role !== "user") return yield* new TitleInputError({ reason: "no_messages" })
+      // Newest first: the window of kept messages, and the newest real user message even when it is older than the window.
+      const limit = input.messages ?? 20
+      const window: SessionV1.WithParts[] = []
+      let newestUser: SessionV1.User | undefined
+      yield* sessions.scanNewestFirst({
+        sessionID: input.sessionID,
+        visit: (m) => {
+          const real = isRealUserMessage(m)
+          if (!newestUser && real && m.info.role === "user") newestUser = m.info
+          if (window.length < limit && (real || m.info.role === "assistant")) window.push(m)
+          return window.length < limit || !newestUser
+        },
+      })
+      if (window.length === 0 || !newestUser) return yield* new TitleInputError({ reason: "no_messages" })
+      const user = newestUser
+      const context = window.reverse()
 
-      const generated = yield* generateTitle({
-        session,
-        user: newestUser,
-        context,
-        ...(input.providerID && input.modelID
-          ? { providerID: input.providerID, modelID: input.modelID }
-          : { providerID: newestUser.model.providerID, modelID: newestUser.model.modelID }),
-      }).pipe(
-        Effect.catchTag("ProviderModelNotFoundError", () =>
-          Effect.fail(new TitleInputError({ reason: "unknown_model" })),
-        ),
-      )
+      const generate = (model: { providerID: ProviderV2.ID; modelID: ModelV2.ID }) =>
+        generateTitle({ agent, session, user, context, ...model })
+      const generated =
+        input.providerID && input.modelID
+          ? yield* generate({ providerID: input.providerID, modelID: input.modelID }).pipe(
+              Effect.catchTag("ProviderModelNotFoundError", () =>
+                Effect.fail(new TitleInputError({ reason: "unknown_model" })),
+              ),
+            )
+          : yield* generate(user.model).pipe(
+              Effect.catchTag("ProviderModelNotFoundError", () =>
+                provider.defaultModel().pipe(Effect.flatMap(generate), Effect.orDie),
+              ),
+            )
       if (!generated) return { title: session.title, applied: false }
 
       const current = yield* sessions.get(input.sessionID)
@@ -1605,13 +1623,20 @@ export const PromptInput = Schema.Struct({
 })
 export type PromptInput = Schema.Schema.Type<typeof PromptInput>
 
+/** providerID and modelID name a model together: both or neither. */
+export const titleModelPair = Schema.makeFilter<{ readonly providerID?: string; readonly modelID?: string }>((input) =>
+  (input.providerID === undefined) === (input.modelID === undefined)
+    ? undefined
+    : "Expected providerID and modelID together, or neither",
+)
+
 export const TitleInput = Schema.Struct({
   sessionID: SessionID,
   providerID: Schema.optional(ProviderV2.ID),
   modelID: Schema.optional(ModelV2.ID),
   messages: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
   ifTitle: Schema.optional(Schema.String),
-})
+}).check(titleModelPair)
 export type TitleInput = Schema.Schema.Type<typeof TitleInput>
 
 export const TitleResult = Schema.Struct({

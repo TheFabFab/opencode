@@ -1159,6 +1159,27 @@ describe("documentor: session title", () => {
     ),
   )
 
+  it.live("documentor: rejects a providerID without a modelID and a modelID without a providerID", () =>
+    live(
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+        const session = yield* createSession({ title: "Hello everyone" }).pipe(provideInstanceEffect(dir))
+        yield* createTextMessage(session.id, "Hello everyone").pipe(provideInstanceEffect(dir))
+
+        for (const body of [{ providerID: "test" }, { modelID: "test-model" }]) {
+          const response = yield* postTitle(dir, session.id, body)
+          expect(response.status).toBe(400)
+          expect(yield* responseJson(response)).toEqual({
+            name: "BadRequest",
+            data: { kind: "Payload", message: "Expected providerID and modelID together, or neither" },
+          })
+        }
+        expect(yield* llm.calls).toBe(0)
+      }),
+    ),
+  )
+
   it.live("documentor: rejects a messages count outside 1..50", () =>
     live(
       Effect.gen(function* () {
