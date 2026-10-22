@@ -46,6 +46,9 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { Provider } from "@/provider/provider"
 import type { Command } from "@/command"
 
+/** Messages read for a usage update: enough to hold the newest assistant message. */
+const USAGE_UPDATE_MESSAGES = 20
+
 export const AuthMethodID = "opencode-login"
 
 export type Error = ACPError.Error
@@ -655,6 +658,10 @@ function makeUsageService(sdk: OpencodeClient) {
     },
   )
 
+  // documentor: reads the newest page only and reports no cost. The latest
+  // assistant message is always on it, and the session total would need every
+  // message of a long chat on each prompt; the ACP field is optional and
+  // DocuMentor reads only `used` and `size`.
   const sendUpdate: UsageService.Interface["sendUpdate"] = Effect.fn("ACP.promptUsage.sendUpdate")(function* (params) {
     const messages = yield* request(
       () =>
@@ -662,6 +669,7 @@ function makeUsageService(sdk: OpencodeClient) {
           {
             sessionID: params.sessionID,
             directory: params.directory,
+            limit: USAGE_UPDATE_MESSAGES,
           },
           { throwOnError: true },
         ),
@@ -692,7 +700,6 @@ function makeUsageService(sdk: OpencodeClient) {
             sessionUpdate: "usage_update",
             used: UsageService.contextTokens(message),
             size,
-            cost: { amount: UsageService.totalSessionCost(messages), currency: "USD" },
           },
         })
         .catch(() => {}),

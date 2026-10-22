@@ -449,6 +449,14 @@ export interface Interface {
   readonly setWorkspace: (input: { sessionID: SessionID; workspaceID: Info["workspaceID"] }) => Effect.Effect<void>
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
   readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<SessionV1.WithParts[], NotFound>
+  /**
+   * documentor: hands messages to `visit` newest first, a page at a time, until it answers false
+   * or the session has no older message, so a caller that needs only recent history stops there.
+   */
+  readonly scanNewestFirst: (input: {
+    sessionID: SessionID
+    visit: (message: SessionV1.WithParts) => boolean
+  }) => Effect.Effect<void, NotFound>
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly updateMessage: <T extends SessionV1.Info>(msg: T) => Effect.Effect<T>
@@ -899,6 +907,10 @@ const layer: Layer.Layer<
       return result.reverse()
     })
 
+    const scanNewestFirst: Interface["scanNewestFirst"] = Effect.fn("Session.scanNewestFirst")((input) =>
+      MessageV2.scanNewestFirst(input).pipe(Effect.provideService(Database.Service, database)),
+    )
+
     const removeMessage = Effect.fn("Session.removeMessage")(function* (input: {
       sessionID: SessionID
       messageID: MessageID
@@ -971,6 +983,7 @@ const layer: Layer.Layer<
       setWorkspace,
       diff,
       messages,
+      scanNewestFirst,
       children,
       remove,
       updateMessage,
