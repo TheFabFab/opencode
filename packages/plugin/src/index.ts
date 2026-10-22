@@ -299,12 +299,24 @@ export interface Hooks {
    * Called before session compaction starts. Allows plugins to customize
    * the compaction prompt.
    *
+   * - `messages`: The messages this compaction takes out of the model's view,
+   *   in the order the model saw them. The tail the compaction keeps is not
+   *   among them.
    * - `context`: Additional context strings appended to the default prompt
    * - `prompt`: If set, replaces the default compaction prompt entirely
+   * - `carry`: Texts the model keeps verbatim after compaction. They are added
+   *   to the compaction's user message once the summary succeeds, so the
+   *   summariser never paraphrases them and every later turn sees them.
    */
   "experimental.session.compacting"?: (
-    input: { sessionID: string },
-    output: { context: string[]; prompt?: string },
+    input: {
+      sessionID: string
+      messages: {
+        info: Message
+        parts: Part[]
+      }[]
+    },
+    output: { context: string[]; prompt?: string; carry: string[] },
   ) => Promise<void>
   /**
    * Called after compaction succeeds and before a synthetic user

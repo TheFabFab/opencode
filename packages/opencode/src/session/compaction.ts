@@ -379,11 +379,14 @@ const layer = Layer.effect(
         cfg,
         model,
       })
-      // Allow plugins to inject context or replace compaction prompt.
+      const tailIndex = selected.tail_start_id
+        ? history.findIndex((m) => m.info.id === selected.tail_start_id)
+        : -1
+      // Allow plugins to inject context, replace the compaction prompt, or carry text past it.
       const compacting = yield* plugin.trigger(
         "experimental.session.compacting",
-        { sessionID: input.sessionID },
-        { context: [], prompt: undefined },
+        { sessionID: input.sessionID, messages: tailIndex >= 0 ? history.slice(0, tailIndex) : history },
+        { context: [], prompt: undefined, carry: [] as string[] },
       )
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
@@ -476,6 +479,24 @@ const layer = Layer.effect(
           ...compactionPart,
           tail_start_id: selected.tail_start_id,
         })
+      }
+
+      // documentor: carried text sits on the compaction's user message, which the model reads before the
+      // summary and which no later summariser is shown, so it survives every compaction verbatim.
+      if (result === "continue" && compactionPart) {
+        for (const text of compacting.carry ?? []) {
+          if (!text) continue
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: input.parentID,
+            sessionID: input.sessionID,
+            type: "text",
+            synthetic: true,
+            metadata: { compaction_carry: true },
+            text,
+            time: { start: Date.now(), end: Date.now() },
+          })
+        }
       }
 
       if (result === "continue" && input.auto) {

@@ -408,6 +408,21 @@ function compactionContext(context: string) {
   })
 }
 
+function compactionCarry(carry: string, seen: SessionV1.WithParts[][]) {
+  return Layer.mock(Plugin.Service)({
+    trigger: <Name extends string, Input, Output>(name: Name, input: Input, output: Output) => {
+      if (name !== "experimental.session.compacting") return Effect.succeed(output)
+      return Effect.sync(() => {
+        seen.push((input as { messages: SessionV1.WithParts[] }).messages)
+        ;(output as { carry: string[] }).carry.push(carry)
+        return output
+      })
+    },
+    list: () => Effect.succeed([]),
+    init: () => Effect.void,
+  })
+}
+
 describe("session.compaction.isOverflow", () => {
   it.live(
     "returns true when token count exceeds usable context",
@@ -1631,6 +1646,60 @@ describe("session.compaction.process", () => {
           plugin: compactionContext("Prioritize unresolved migration details"),
         }),
       )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "documentor: carries plugin text verbatim on the compaction message, out of every later summariser's view",
+    () => {
+      const stub = llm()
+      const captured: string[] = []
+      stub.push(reply("summary one", (input) => captured.push(JSON.stringify(input.messages))))
+      stub.push(reply("summary two", (input) => captured.push(JSON.stringify(input.messages))))
+      const seen: SessionV1.WithParts[][] = []
+
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const older = yield* createUserMessage(session.id, "older context")
+        yield* createCompactionMarker(session.id)
+
+        let msgs = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+        const first = msgs.at(-1)!.info.id
+        yield* SessionCompaction.use.process({ parentID: first, messages: msgs, sessionID: session.id, auto: false })
+
+        expect(seen[0].map((m) => m.info.id)).toContain(older.id)
+        const carried = (yield* ssn.messages({ sessionID: session.id }))
+          .find((m) => m.info.id === first)!
+          .parts.filter((p): p is SessionV1.TextPart => p.type === "text")
+        expect(carried.map((p) => [p.text, p.synthetic, p.metadata?.compaction_carry])).toEqual([
+          ["CARRIED PROJECT FILE", true, true],
+        ])
+
+        yield* createUserMessage(session.id, "latest turn")
+        yield* createCompactionMarker(session.id)
+        msgs = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+        const view = JSON.stringify(
+          yield* MessageV2.toModelMessagesEffect(msgs, createModel({ context: 100_000, output: 32_000 })),
+        )
+        expect(view).toContain("CARRIED PROJECT FILE")
+        expect(view.indexOf("CARRIED PROJECT FILE")).toBeLessThan(view.indexOf("summary one"))
+
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        })
+        expect(captured[1]).toContain("summary one")
+        expect(captured[1]).not.toContain("CARRIED PROJECT FILE")
+        expect(
+          seen[1].some(
+            (m) => m.info.id === first && m.parts.some((p) => p.type === "text" && p.text === "CARRIED PROJECT FILE"),
+          ),
+        ).toBe(true)
+      }).pipe(withCompaction({ llm: stub.llmLayer, plugin: compactionCarry("CARRIED PROJECT FILE", seen) }))
     },
     { git: true },
   )
