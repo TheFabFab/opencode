@@ -52,7 +52,7 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { isTitleRequest, reply, TestLLMServer, type Match } from "../lib/llm-server"
+import { reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -367,8 +367,6 @@ function defer<T>() {
 const succeedVoid = (deferred: Deferred.Deferred<void>) => {
   Effect.runSync(Deferred.succeed(deferred, void 0).pipe(Effect.ignore))
 }
-
-const isTitle: Match = (hit) => isTitleRequest(hit.body)
 
 const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string) {
   const session = yield* Session.Service
@@ -2852,7 +2850,7 @@ it.instance("documentor: a title on demand reads the newest messages and sets th
     yield* user(chat.id, "Hello everyone")
     yield* user(chat.id, "How do we split the chapters?")
     yield* user(chat.id, "I can take the assessment part")
-    yield* llm.textMatch(isTitle, "Chapter split")
+    yield* llm.textTitle("Chapter split")
 
     const result = yield* prompt.title({ sessionID: chat.id, ifTitle: "Hello everyone" })
 
@@ -2890,7 +2888,7 @@ it.instance("documentor: a title on demand leaves a session renamed during the c
     yield* user(chat.id, "Hello everyone")
     // The rename lands while the model answers: hold the answer until the title is set from outside.
     const renamed = defer<void>()
-    yield* llm.pushMatch(isTitle, reply().wait(renamed.promise).text("Chapter split").stop())
+    yield* llm.pushTitle(reply().wait(renamed.promise).text("Chapter split").stop())
     const running = yield* prompt.title({ sessionID: chat.id, ifTitle: "Hello everyone" }).pipe(Effect.forkScoped)
     yield* llm.wait(1)
     yield* sessions.setTitle({ sessionID: chat.id, title: "Renamed by Anna" })
@@ -2910,7 +2908,7 @@ it.instance("documentor: an empty title answer writes nothing", () =>
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Hello everyone" })
     yield* user(chat.id, "Hello everyone")
-    yield* llm.textMatch(isTitle, "<think>nothing useful</think>")
+    yield* llm.textTitle("<think>nothing useful</think>")
 
     const result = yield* prompt.title({ sessionID: chat.id })
 
@@ -2989,7 +2987,7 @@ it.instance("documentor: a title on demand reads only the newest messages", () =
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Hello everyone" })
     for (let i = 1; i <= 25; i++) yield* user(chat.id, `message ${i}`)
-    yield* llm.textMatch(isTitle, "Windowed")
+    yield* llm.textTitle("Windowed")
 
     const result = yield* prompt.title({ sessionID: chat.id, messages: 20 })
 

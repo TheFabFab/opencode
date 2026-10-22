@@ -20,7 +20,7 @@ type Hit = {
   body: Record<string, unknown>
 }
 
-export type Match = (hit: Hit) => boolean
+type Match = (hit: Hit) => boolean
 
 type Queue = {
   item: Item
@@ -604,7 +604,7 @@ function hit(url: string, body: unknown) {
   } satisfies Hit
 }
 
-export function isTitleRequest(body: unknown): boolean {
+function isTitleRequest(body: unknown): boolean {
   if (!body || typeof body !== "object") return false
   return JSON.stringify(body).includes("Generate a title for this conversation")
 }
@@ -617,6 +617,8 @@ namespace TestLLMServer {
     readonly textMatch: (match: Match, value: string, opts?: { usage?: Usage }) => Effect.Effect<void>
     readonly toolMatch: (match: Match, name: string, input: unknown) => Effect.Effect<void>
     readonly text: (value: string, opts?: { usage?: Usage }) => Effect.Effect<void>
+    readonly pushTitle: (...input: (Item | Reply)[]) => Effect.Effect<void>
+    readonly textTitle: (value: string) => Effect.Effect<void>
     readonly tool: (name: string, input: unknown) => Effect.Effect<void>
     readonly toolHang: (name: string, input: unknown) => Effect.Effect<void>
     readonly reason: (value: string, opts?: { text?: string; usage?: Usage }) => Effect.Effect<void>
@@ -643,6 +645,8 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
 
       let hits: Hit[] = []
       let list: Queue[] = []
+      // Title requests are answered from their own queue, then by the "E2E Title" auto-answer; the main queue never sees them.
+      let titles: Item[] = []
       let waits: Wait[] = []
       let misses: Hit[] = []
 
@@ -661,11 +665,8 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         yield* Effect.forEach(ready, (item) => Deferred.succeed(item.ready, void 0))
       })
 
-      // A title request takes only an entry queued with a match for it; unmatched entries are left for the turn.
-      const pull = (hit: Hit, title: boolean) => {
-        const index = title
-          ? list.findIndex((entry) => entry.match && entry.match(hit))
-          : list.findIndex((entry) => !entry.match || entry.match(hit))
+      const pull = (hit: Hit) => {
+        const index = list.findIndex((entry) => !entry.match || entry.match(hit))
         if (index === -1) return
         const first = list[index]
         list = [...list.slice(0, index), ...list.slice(index + 1)]
@@ -677,7 +678,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         const body = yield* req.json.pipe(Effect.orElseSucceed(() => ({})))
         const current = hit(req.originalUrl, body)
         const title = isTitleRequest(body)
-        const next = pull(current, title)
+        const next = title ? titles.shift() : pull(current)
         if (title && !next) {
           hits = [...hits, current]
           yield* notify()
@@ -760,9 +761,16 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         hold: Effect.fn("TestLLMServer.hold")(function* (value: string, wait: PromiseLike<unknown>) {
           queue(reply().wait(wait).text(value).stop().item())
         }),
+        pushTitle: Effect.fn("TestLLMServer.pushTitle")(function* (...input: (Item | Reply)[]) {
+          titles = [...titles, ...input.map(item)]
+        }),
+        textTitle: Effect.fn("TestLLMServer.textTitle")(function* (value: string) {
+          titles = [...titles, reply().text(value).stop().item()]
+        }),
         reset: Effect.sync(() => {
           hits = []
           list = []
+          titles = []
           waits = []
           misses = []
         }),

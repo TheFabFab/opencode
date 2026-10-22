@@ -34,7 +34,7 @@ import * as DateTime from "effect/DateTime"
 import { eq } from "drizzle-orm"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideInstanceEffect, TestInstance, tmpdirScoped } from "../fixture/fixture"
-import { isTitleRequest, TestLLMServer } from "../lib/llm-server"
+import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -1101,7 +1101,7 @@ describe("documentor: session title", () => {
     live(
       Effect.gen(function* () {
         const llm = yield* TestLLMServer
-        yield* llm.textMatch((hit) => isTitleRequest(hit.body), "Chapter split")
+        yield* llm.textTitle("Chapter split")
 
         const dir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
         const session = yield* createSession({ title: "Hello everyone" }).pipe(provideInstanceEffect(dir))
