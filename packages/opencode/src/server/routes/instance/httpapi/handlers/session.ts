@@ -34,9 +34,10 @@ import {
   RevertPayload,
   ShellPayload,
   SummarizePayload,
+  TitlePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError } from "../errors"
+import { notFound, PermissionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
 
 const tryParseJson = (text: string) =>
@@ -292,6 +293,17 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const title = Effect.fn("SessionHttpApi.title")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof TitlePayload.Type
+    }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* promptSvc.title({ sessionID: ctx.params.sessionID, ...ctx.payload }).pipe(
+        Effect.catchTag("TitleInputError", () => Effect.fail(new HttpApiError.BadRequest({}))),
+        Effect.catchTag("NotFoundError", (error) => Effect.fail(notFound(error.message))),
+      )
+    })
+
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof PromptPayload.Type
@@ -428,6 +440,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("share", share)
       .handle("unshare", unshare)
       .handle("summarize", summarize)
+      .handle("title", title)
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
       .handle("command", command)

@@ -10169,6 +10169,48 @@ export type SessionSummarizeResponses = {
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]
 
+export type SessionTitleData = {
+  body?: {
+    providerID?: string
+    modelID?: string
+    messages?: number
+    ifTitle?: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/title"
+}
+
+export type SessionTitleErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionTitleError = SessionTitleErrors[keyof SessionTitleErrors]
+
+export type SessionTitleResponses = {
+  /**
+   * Generated title
+   */
+  200: {
+    title: string
+    applied: boolean
+  }
+}
+
+export type SessionTitleResponse = SessionTitleResponses[keyof SessionTitleResponses]
+
 export type SessionPromptAsyncData = {
   body?: {
     messageID?: string
