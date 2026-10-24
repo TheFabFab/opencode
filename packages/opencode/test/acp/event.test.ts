@@ -840,6 +840,72 @@ describe("documentor: acp update message meta", () => {
     expect(harness.calls.message).toBe(0)
   })
 
+  it("documentor: marks the chunks of a compaction summary", async () => {
+    const harness = createHarness()
+    await createKnownSession(harness.session, "ses_summary", {
+      messageId: "msg_summary",
+      partId: "part_text",
+      partType: "text",
+    })
+    await harness.subscription.handle(
+      messageUpdated({
+        ...assistantInfoWithParent("ses_summary", "msg_summary", "msg_compaction"),
+        mode: "compaction",
+        agent: "compaction",
+        summary: true,
+      }),
+    )
+    await harness.subscription.handle(textDelta("ses_summary", "msg_summary", "part_text", "## Ziel"))
+
+    expect(harness.updates.map((update) => update.update._meta)).toEqual([
+      { opencode: { messageId: "msg_summary", parentId: "msg_compaction", summary: true } },
+    ])
+  })
+
+  it("documentor: marks a compaction summary found by lookup", async () => {
+    const fetched = assistantMessage("ses_summary_fetch", "msg_summary", "part_text", "text")
+    const harness = createHarness({ msg_summary: { ...fetched, info: { ...fetched.info, summary: true } } })
+    await createKnownSession(harness.session, "ses_summary_fetch", {
+      messageId: "msg_summary",
+      partId: "part_text",
+      partType: "text",
+    })
+    await harness.subscription.handle(textDelta("ses_summary_fetch", "msg_summary", "part_text", "## Ziel"))
+
+    expect(harness.updates.at(-1)?.update._meta).toEqual({
+      opencode: { messageId: "msg_summary", parentId: "msg_parent", summary: true },
+    })
+    expect(harness.calls.message).toBe(1)
+  })
+
+  it("documentor: marks a replayed compaction summary", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_replay_summary", cwd: "/workspace" }))
+
+    await harness.subscription.replayMessage({
+      info: {
+        id: "msg_summary_4",
+        sessionID: "ses_replay_summary",
+        role: "assistant",
+        parentID: "msg_compaction_4",
+        summary: true,
+      },
+      parts: [
+        {
+          id: "part_summary_4",
+          sessionID: "ses_replay_summary",
+          messageID: "msg_summary_4",
+          type: "text",
+          text: "## Ziel",
+        },
+      ],
+    } as unknown as SessionMessageResponse)
+
+    expect(harness.updates[0]?.update._meta).toEqual({
+      opencode: { messageId: "msg_summary_4", parentId: "msg_compaction_4", summary: true },
+    })
+  })
+
   it("documentor: replays a user message with its author, answerable flag and part metadata", async () => {
     const harness = createHarness()
     await Effect.runPromise(harness.session.create({ id: "ses_replay_user", cwd: "/workspace" }))
