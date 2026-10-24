@@ -35,7 +35,9 @@ type GlobalEventStream = {
  * `_meta.opencode` on every content and tool update: the assistant message the
  * update belongs to, and the user message that assistant answers. A client that
  * sends a prompt while a turn runs reads from it the moment the agent starts
- * answering that prompt. On a replayed user message `messageId` is that user
+ * answering that prompt. An assistant message that is a compaction summary
+ * carries `summary: true`, so a client tells the summary from a reply without
+ * reading its text. On a replayed user message `messageId` is that user
  * message and `parentId` is `null`; it also names its author, carries
  * `answerable: false` when it is context no turn answers, and carries its text
  * part's metadata.
@@ -44,11 +46,25 @@ export type OpencodeUpdateMeta = {
   opencode: {
     messageId: string
     parentId: string | null
+    summary?: true
     author?: { id: string; name: string }
     answerable?: boolean
     partMetadata?: Record<string, unknown>
   }
 }
+
+type AssistantLink = { parentId: string | null; summary: boolean }
+
+const NO_LINK: AssistantLink = { parentId: null, summary: false }
+
+const assistantLink = (info: { parentID?: string; summary?: boolean }): AssistantLink => ({
+  parentId: info.parentID ?? null,
+  summary: info.summary === true,
+})
+
+const linkMeta = (messageId: string, link: AssistantLink): OpencodeUpdateMeta => ({
+  opencode: { messageId, parentId: link.parentId, ...(link.summary ? { summary: true as const } : {}) },
+})
 
 export function start(input: { sdk: OpencodeClient; connection: Connection; session: ACPSession.Interface }) {
   const subscription = new Subscription(input)
@@ -62,10 +78,10 @@ export class Subscription {
   private readonly toolStarts = new Set<string>()
   private readonly connectionWaiters = new Set<() => void>()
   private readonly idleWaiters = new Map<string, Set<ReturnType<typeof signal>>>()
-  // Per tracked session: assistant message id → its parentID. Filled from message.updated, which opencode publishes
-  // before any part of the message, or by one lookup on a miss; a failed lookup holds null. Forgotten when the
-  // session goes idle and when the event stream disconnects.
-  private readonly messageParents = new Map<string, Map<string, Promise<string | null>>>()
+  // Per tracked session: assistant message id → its parentID and summary flag. Filled from message.updated, which
+  // opencode publishes before any part of the message, or by one lookup on a miss; a failed lookup holds a null
+  // parent. Forgotten when the session goes idle and when the event stream disconnects.
+  private readonly messageParents = new Map<string, Map<string, Promise<AssistantLink>>>()
   private readonly permission: ACPPermission.Handler
   private connected = false
   private started = false
@@ -168,6 +184,7 @@ export class Subscription {
             opencode: {
               messageId: message.info.id,
               parentId: message.info.role === "assistant" ? (message.info.parentID ?? null) : null,
+              ...(message.info.role === "assistant" && message.info.summary === true ? { summary: true as const } : {}),
               ...(user?.author ? { author: user.author } : {}),
               ...(user?.answerable === false ? { answerable: false } : {}),
               ...(user && part.type === "text" && part.metadata ? { partMetadata: part.metadata } : {}),
@@ -236,13 +253,13 @@ export class Subscription {
   // Only assistant messages: updates name the assistant message they belong to, never a user message.
   private recordMessage(info: Message) {
     if (info.role !== "assistant") return
-    this.sessionParents(info.sessionID).set(info.id, Promise.resolve(info.parentID ?? null))
+    this.sessionParents(info.sessionID).set(info.id, Promise.resolve(assistantLink(info)))
   }
 
   private sessionParents(sessionId: string) {
     const existing = this.messageParents.get(sessionId)
     if (existing) return existing
-    const parents = new Map<string, Promise<string | null>>()
+    const parents = new Map<string, Promise<AssistantLink>>()
     this.messageParents.set(sessionId, parents)
     return parents
   }
@@ -250,7 +267,7 @@ export class Subscription {
   private async messageMeta(sessionId: string, cwd: string, messageId: string): Promise<OpencodeUpdateMeta> {
     const parents = this.sessionParents(sessionId)
     const known = parents.get(messageId)
-    if (known) return { opencode: { messageId, parentId: await known } }
+    if (known) return linkMeta(messageId, await known)
     // The subscription misses message.updated when it connects mid-turn or after the session went idle. One lookup
     // per message answers every update for it, concurrent ones included. A failed lookup is remembered as null until
     // the session goes idle, so a server that cannot answer is not asked again for each chunk of the stream.
@@ -263,11 +280,11 @@ export class Subscription {
       )
       .then((response) => {
         const info = response.data?.info
-        return info?.role === "assistant" ? (info.parentID ?? null) : null
+        return info?.role === "assistant" ? assistantLink(info) : NO_LINK
       })
-      .catch(() => null)
+      .catch(() => NO_LINK)
     parents.set(messageId, lookup)
-    return { opencode: { messageId, parentId: await lookup } }
+    return linkMeta(messageId, await lookup)
   }
 
   private async handlePartUpdated(event: EventMessagePartUpdated) {
