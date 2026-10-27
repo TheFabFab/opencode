@@ -2,7 +2,7 @@ import { describe, expect } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Deferred, Effect, Exit, Layer } from "effect"
+import { Deferred, Effect, Exit, Layer, Tracer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
@@ -294,6 +294,27 @@ describe("documentor: caller-chosen session id", () => {
 
       expect(info.id).toBe(id)
       expect((yield* session.get(id)).id).toBe(id)
+      yield* session.remove(id)
+    }),
+  )
+
+  it.instance("checks the id is free without a lookup that fails and is traced as an error", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const id = "ses_fe0123456789CallerChosen2" as SessionID
+      const native = yield* Effect.tracer
+      const opened: string[] = []
+      const tracer = Tracer.make({
+        span(options) {
+          opened.push(options.name)
+          return native.span(options)
+        },
+      })
+
+      yield* session.create({ id }).pipe(Effect.withTracer(tracer))
+
+      expect(opened).toContain("Session.create")
+      expect(opened).not.toContain("Session.get")
       yield* session.remove(id)
     }),
   )

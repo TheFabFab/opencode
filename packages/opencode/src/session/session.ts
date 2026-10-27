@@ -702,10 +702,17 @@ const layer: Layer.Layer<
       const ctx = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
       // A caller-chosen id names a new session, never an existing one. The projector refuses a duplicate row as
-      // well; checking first turns that into an error that names the id instead of a failed projection.
+      // well; checking first turns that into an error that names the id instead of a failed projection. The check
+      // reads the row directly: `get` fails on the miss every new session meets, and its span records that
+      // expected miss as an error.
       if (input?.id !== undefined) {
-        const existing = yield* get(input.id).pipe(Effect.option)
-        if (existing._tag === "Some") return yield* Effect.die(new Error(`Session already exists: ${input.id}`))
+        const existing = yield* db
+          .select({ id: SessionTable.id })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, input.id))
+          .get()
+          .pipe(Effect.orDie)
+        if (existing) return yield* Effect.die(new Error(`Session already exists: ${input.id}`))
       }
       return yield* createNext({
         id: input?.id,
