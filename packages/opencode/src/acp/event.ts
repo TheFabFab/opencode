@@ -2,6 +2,7 @@ import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import type {
   Event,
   EventMessagePartDelta,
+  EventMessagePartRemoved,
   EventMessagePartUpdated,
   Message,
   OpencodeClient,
@@ -52,6 +53,14 @@ export type OpencodeUpdateMeta = {
     partMetadata?: Record<string, unknown>
     /** The next piece of a pending tool call's streamed argument text, on a `tool_call_update`. */
     inputDelta?: string
+    /** The part an `agent_message_chunk` or `agent_thought_chunk` belongs to. */
+    partId?: string
+    /**
+     * The part this update names was removed: an abandoned attempt at a step
+     * the model is retrying. Sent with no content, on the update type the part
+     * streamed as, so a client drops what it showed.
+     */
+    removed?: true
   }
 }
 
@@ -146,6 +155,8 @@ export class Subscription {
         return this.handlePartUpdated(event)
       case "message.part.delta":
         return this.handlePartDelta(event)
+      case "message.part.removed":
+        return this.handlePartRemoved(event)
     }
   }
 
@@ -312,6 +323,60 @@ export class Subscription {
     }
   }
 
+  private async partMeta(sessionId: string, cwd: string, messageId: string, partId: string) {
+    const meta = await this.messageMeta(sessionId, cwd, messageId)
+    return { opencode: { ...meta.opencode, partId } } satisfies OpencodeUpdateMeta
+  }
+
+  // Only a part a client was shown is named: a text or reasoning part that
+  // streamed, or a tool call.
+  private async handlePartRemoved(event: EventMessagePartRemoved) {
+    const props = event.properties
+    const session = await Effect.runPromise(this.input.session.tryGet(props.sessionID))
+    if (!session) return
+    const metadata = await Effect.runPromise(
+      this.input.session.tryGetPartMetadata({
+        sessionId: session.id,
+        messageId: props.messageID,
+        partId: props.partID,
+      }),
+    )
+    if (!metadata) return
+    const meta = await this.partMeta(session.id, session.cwd, props.messageID, props.partID)
+    const removed = { opencode: { ...meta.opencode, removed: true } } satisfies OpencodeUpdateMeta
+    if (metadata.partType === "tool" && metadata.toolCallId) {
+      await this.input.connection.sessionUpdate({
+        sessionId: session.id,
+        update: { sessionUpdate: "tool_call_update", toolCallId: metadata.toolCallId, _meta: removed },
+      })
+      return
+    }
+    if (metadata.role !== "assistant") return
+    if (metadata.partType === "text") {
+      await this.input.connection.sessionUpdate({
+        sessionId: session.id,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: props.messageID,
+          content: { type: "text", text: "" },
+          _meta: removed,
+        },
+      })
+      return
+    }
+    if (metadata.partType === "reasoning") {
+      await this.input.connection.sessionUpdate({
+        sessionId: session.id,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          messageId: props.partID,
+          content: { type: "text", text: "" },
+          _meta: removed,
+        },
+      })
+    }
+  }
+
   private async handlePartDelta(event: EventMessagePartDelta) {
     const props = event.properties
     const session = await Effect.runPromise(this.input.session.tryGet(props.sessionID))
@@ -339,7 +404,7 @@ export class Subscription {
             type: "text",
             text: props.delta,
           },
-          _meta: await this.messageMeta(session.id, session.cwd, props.messageID),
+          _meta: await this.partMeta(session.id, session.cwd, props.messageID, props.partID),
         },
       })
       return
