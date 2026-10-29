@@ -651,6 +651,80 @@ it.live("session.processor effect tests retry OpenAI-compatible midstream server
   ),
 )
 
+for (const [name, first] of [
+  ["text", { role: "assistant", content: "abandoned words" }],
+  [
+    "a tool call it never finished",
+    {
+      role: "assistant",
+      tool_calls: [{ index: 0, id: "call_abandoned", type: "function", function: { name: "bash", arguments: '{"comm' } }],
+    },
+  ],
+] as const) {
+  it.live(`session.processor effect tests remove ${name} an abandoned attempt left before retrying`, () =>
+    provideTmpdirServer(
+      ({ dir, llm }) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const events = yield* EventV2Bridge.Service
+
+          yield* llm.push(
+            raw({
+              chunks: [
+                { id: "chatcmpl-abandoned", object: "chat.completion.chunk", choices: [{ index: 0, delta: first }] },
+                { error: { type: "server_error", code: "server_error", message: "xxx" } },
+              ],
+            }),
+          )
+          yield* llm.text("after")
+
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "retry after partial output")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const removed: string[] = []
+          const off = yield* events.listen((evt) => {
+            if (evt.type !== MessageV2.Event.PartRemoved.type) return Effect.void
+            const data = evt.data as typeof MessageV2.Event.PartRemoved.data.Type
+            if (data.messageID === msg.id) removed.push(data.partID)
+            return Effect.void
+          })
+          const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+          const value = yield* handle.process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "retry after partial output" }],
+            tools: {},
+          })
+
+          yield* off
+          const parts = yield* MessageV2.parts(msg.id)
+
+          expect(value).toBe("continue")
+          expect(yield* llm.calls).toBe(2)
+          expect(parts.map((part) => (part.type === "text" ? `text:${part.text}` : part.type))).toEqual([
+            "step-start",
+            "text:after",
+            "step-finish",
+          ])
+          expect(removed.length).toBeGreaterThan(0)
+        }),
+      { config: (url) => providerCfg(url) },
+    ),
+  )
+}
+
 it.live("session.processor effect tests retry network_error finish reasons", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>

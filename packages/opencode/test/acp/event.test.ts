@@ -416,6 +416,63 @@ describe("acp event routing", () => {
     ])
   })
 
+  it("documentor: tells the client which part a removed text, reasoning or tool part was", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_gone", cwd: "/workspace" }))
+    for (const [partId, partType, toolCallId] of [
+      ["part_text", "text", undefined],
+      ["part_reasoning", "reasoning", undefined],
+      ["part_tool", "tool", "call_gone"],
+      ["part_step", "step-start", undefined],
+    ] as const) {
+      await Effect.runPromise(
+        harness.session.recordPartMetadata({
+          sessionId: "ses_gone",
+          messageId: "msg_gone",
+          partId,
+          partType,
+          role: "assistant",
+          toolCallId,
+        }),
+      )
+    }
+    const removed = (partID: string) =>
+      ({
+        type: "message.part.removed",
+        properties: { sessionID: "ses_gone", messageID: "msg_gone", partID },
+      }) as Event
+
+    await harness.subscription.handle(textDelta("ses_gone", "msg_gone", "part_text", "half a sen"))
+    for (const partID of ["part_text", "part_reasoning", "part_tool", "part_step", "part_unknown"]) {
+      await harness.subscription.handle(removed(partID))
+    }
+
+    const meta = (partId: string, extra: Record<string, unknown> = {}) => ({
+      opencode: { messageId: "msg_gone", parentId: null, partId, ...extra },
+    })
+    expect(harness.updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg_gone",
+        content: { type: "text", text: "half a sen" },
+        _meta: meta("part_text"),
+      },
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg_gone",
+        content: { type: "text", text: "" },
+        _meta: meta("part_text", { removed: true }),
+      },
+      {
+        sessionUpdate: "agent_thought_chunk",
+        messageId: "part_reasoning",
+        content: { type: "text", text: "" },
+        _meta: meta("part_reasoning", { removed: true }),
+      },
+      { sessionUpdate: "tool_call_update", toolCallId: "call_gone", _meta: meta("part_tool", { removed: true }) },
+    ])
+  })
+
   it("uses reasoning part ids as ACP thought message boundaries", async () => {
     const harness = createHarness()
     await createKnownSession(harness.session, "ses_reasoning", {
@@ -869,7 +926,7 @@ describe("documentor: acp update message meta", () => {
         sessionUpdate: "agent_message_chunk",
         messageId: "msg_answer",
         content: { type: "text", text: "hello" },
-        _meta: { opencode: { messageId: "msg_answer", parentId: "msg_user_queued" } },
+        _meta: { opencode: { messageId: "msg_answer", parentId: "msg_user_queued", partId: "part_text" } },
       },
     ])
     expect(harness.calls.message).toBe(0)
@@ -893,7 +950,37 @@ describe("documentor: acp update message meta", () => {
     await harness.subscription.handle(textDelta("ses_summary", "msg_summary", "part_text", "## Ziel"))
 
     expect(harness.updates.map((update) => update.update._meta)).toEqual([
-      { opencode: { messageId: "msg_summary", parentId: "msg_compaction", summary: true } },
+      { opencode: { messageId: "msg_summary", parentId: "msg_compaction", summary: true, partId: "part_text" } },
+    ])
+  })
+
+  it("documentor: announces once a compaction summary that ended without finishing", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_cut", cwd: "/workspace" }))
+    const summary = {
+      ...assistantInfoWithParent("ses_cut", "msg_summary", "msg_compaction"),
+      mode: "compaction",
+      agent: "compaction",
+      summary: true,
+    } satisfies Message
+    const stopped = {
+      ...summary,
+      time: { created: 1, completed: 2 },
+      error: { name: "MessageAbortedError", data: { message: "Aborted" } },
+    } as Message
+
+    await harness.subscription.handle(messageUpdated(summary))
+    await harness.subscription.handle(messageUpdated({ ...summary, time: { created: 1, completed: 2 } } as Message))
+    await harness.subscription.handle(messageUpdated(stopped))
+    await harness.subscription.handle(messageUpdated(stopped))
+
+    expect(harness.updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg_summary",
+        content: { type: "text", text: "" },
+        _meta: { opencode: { messageId: "msg_summary", parentId: "msg_compaction", summary: true, interrupted: true } },
+      },
     ])
   })
 
@@ -908,7 +995,7 @@ describe("documentor: acp update message meta", () => {
     await harness.subscription.handle(textDelta("ses_summary_fetch", "msg_summary", "part_text", "## Ziel"))
 
     expect(harness.updates.at(-1)?.update._meta).toEqual({
-      opencode: { messageId: "msg_summary", parentId: "msg_parent", summary: true },
+      opencode: { messageId: "msg_summary", parentId: "msg_parent", summary: true, partId: "part_text" },
     })
     expect(harness.calls.message).toBe(1)
   })
@@ -1107,7 +1194,7 @@ describe("documentor: acp update message meta", () => {
 
     expect(harness.calls.message).toBe(1)
     expect(harness.updates.at(-1)?.update._meta).toEqual({
-      opencode: { messageId: "msg_answer", parentId: "msg_parent" },
+      opencode: { messageId: "msg_answer", parentId: "msg_parent", partId: "part_text" },
     })
   })
 
@@ -1130,7 +1217,7 @@ describe("documentor: acp update message meta", () => {
 
     expect(harness.calls.message).toBe(1)
     expect(harness.updates.map((update) => update.update._meta)).toEqual(
-      Array.from({ length: 5 }, () => ({ opencode: { messageId: "msg_answer", parentId: null } })),
+      Array.from({ length: 5 }, () => ({ opencode: { messageId: "msg_answer", parentId: null, partId: "part_text" } })),
     )
 
     await harness.subscription.handle(sessionIdle("ses_fail"))
@@ -1162,8 +1249,8 @@ describe("documentor: acp update message meta", () => {
 
     expect(harness.calls.message).toBe(1)
     expect(harness.updates.map((update) => update.update._meta)).toEqual([
-      { opencode: { messageId: "msg_answer", parentId: "msg_parent" } },
-      { opencode: { messageId: "msg_answer", parentId: "msg_parent" } },
+      { opencode: { messageId: "msg_answer", parentId: "msg_parent", partId: "part_text" } },
+      { opencode: { messageId: "msg_answer", parentId: "msg_parent", partId: "part_text" } },
     ])
   })
 
@@ -1179,7 +1266,7 @@ describe("documentor: acp update message meta", () => {
 
     expect(harness.calls.message).toBe(1)
     expect(harness.updates.at(-1)?.update._meta).toEqual({
-      opencode: { messageId: "msg_answer", parentId: "msg_parent" },
+      opencode: { messageId: "msg_answer", parentId: "msg_parent", partId: "part_text" },
     })
   })
 })

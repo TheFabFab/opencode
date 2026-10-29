@@ -80,7 +80,23 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  attempt: Attempt
 }
+
+/**
+ * What the current attempt at the step has stored. A retried step starts over,
+ * so the parts an abandoned attempt left are removed before the next one runs:
+ * kept, they would show as a half-written text, an empty compaction summary or
+ * an aborted tool call that never ran, beside the attempt that succeeded.
+ */
+type Attempt = {
+  parts: PartID[]
+  toolCallIDs: string[]
+  stepStartID: PartID | undefined
+  finished: boolean
+}
+
+const newAttempt = (): Attempt => ({ parts: [], toolCallIDs: [], stepStartID: undefined, finished: false })
 
 type StreamEvent = LLMEvent
 
@@ -119,6 +135,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        attempt: newAttempt(),
       }
       let aborted = false
 
@@ -264,7 +281,31 @@ const layer = Layer.effect(
           messageID: part.messageID,
           sessionID: part.sessionID,
         }
+        ctx.attempt.toolCallIDs.push(input.id)
         return { call: ctx.toolcalls[input.id], part }
+      }, exclusive)
+
+      // A tool call that started running keeps its part, and the step's start
+      // with it: what it did happened, whatever became of the stream.
+      const discardAttempt = Effect.fn("SessionProcessor.discardAttempt")(function* () {
+        const attempt = ctx.attempt
+        ctx.attempt = newAttempt()
+        if (attempt.finished) return
+        const remove = (partID: PartID) =>
+          session.removePart({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id, partID })
+        let ranTool = false
+        for (const toolCallID of attempt.toolCallIDs) {
+          const match = yield* readToolCall(toolCallID)
+          if (!match) continue
+          if (match.part.state.status !== "pending") {
+            ranTool = true
+            continue
+          }
+          yield* remove(match.part.id)
+          yield* settleToolCall(toolCallID)
+        }
+        for (const partID of attempt.parts) yield* remove(partID)
+        if (attempt.stepStartID && !ranTool) yield* remove(attempt.stepStartID)
       }, exclusive)
 
       // The arguments a model is still writing reach subscribers as deltas on
@@ -325,6 +366,7 @@ const layer = Layer.effect(
               metadata: value.providerMetadata,
             }
             yield* session.updatePart(ctx.reasoningMap[value.id])
+            ctx.attempt.parts.push(ctx.reasoningMap[value.id].id)
             return
 
           case "reasoning-delta":
@@ -467,18 +509,21 @@ const layer = Layer.effect(
           case "provider-error":
             throw new Error(value.message)
 
-          case "step-start":
+          case "step-start": {
             if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
-            yield* session.updatePart({
+            const part = yield* session.updatePart({
               id: PartID.ascending(),
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.sessionID,
               snapshot: ctx.snapshot,
               type: "step-start",
             })
+            ctx.attempt.stepStartID = part.id
             return
+          }
 
           case "step-finish": {
+            ctx.attempt.finished = true
             const completedSnapshot = yield* snapshot.track()
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             // Anthropic reports thinking blocks it removed before the model saw the
@@ -554,6 +599,7 @@ const layer = Layer.effect(
               metadata: value.providerMetadata,
             }
             yield* session.updatePart(ctx.currentText)
+            ctx.attempt.parts.push(ctx.currentText.id)
             return
 
           case "text-delta":
@@ -700,6 +746,7 @@ const layer = Layer.effect(
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
+            yield* discardAttempt()
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
