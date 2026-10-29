@@ -50,6 +50,8 @@ export type OpencodeUpdateMeta = {
     author?: { id: string; name: string }
     answerable?: boolean
     partMetadata?: Record<string, unknown>
+    /** The next piece of a pending tool call's streamed argument text, on a `tool_call_update`. */
+    inputDelta?: string
   }
 }
 
@@ -338,6 +340,20 @@ export class Subscription {
             text: props.delta,
           },
           _meta: await this.messageMeta(session.id, session.cwd, props.messageID),
+        },
+      })
+      return
+    }
+
+    if (metadata.partType === "tool" && props.field === "raw" && metadata.toolCallId) {
+      const meta = await this.messageMeta(session.id, session.cwd, props.messageID)
+      await this.input.connection.sessionUpdate({
+        sessionId: session.id,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: metadata.toolCallId,
+          status: "pending",
+          _meta: { opencode: { ...meta.opencode, inputDelta: props.delta } } satisfies OpencodeUpdateMeta,
         },
       })
       return

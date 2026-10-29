@@ -14,6 +14,7 @@ import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 import { isOverflow } from "./overflow"
+import { takeToolInput, type ToolInputProgress } from "./tool-input-progress"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
@@ -64,7 +65,7 @@ export interface Interface {
   readonly create: (input: Input) => Effect.Effect<Handle>
 }
 
-type ToolCall = {
+type ToolCall = ToolInputProgress & {
   partID: SessionV1.ToolPart["id"]
   messageID: SessionV1.ToolPart["messageID"]
   sessionID: SessionV1.ToolPart["sessionID"]
@@ -266,6 +267,27 @@ const layer = Layer.effect(
         return { call: ctx.toolcalls[input.id], part }
       }, exclusive)
 
+      // The arguments a model is still writing reach subscribers as deltas on
+      // the pending tool part's `raw` field: the first piece at once, then at
+      // most one batch per TOOL_INPUT_PROGRESS_MS, and the remainder when the
+      // input ends. A delta is a bus event, not a write, and the stored part
+      // keeps `raw: ""`; each batch touches the session, so a long write shows
+      // as recent activity.
+      const publishToolInput = Effect.fnUntraced(function* (toolCallID: string, force: boolean) {
+        const call = ctx.toolcalls[toolCallID]
+        if (!call) return
+        const delta = takeToolInput(call, Date.now(), force)
+        if (delta === undefined) return
+        yield* session.updatePartDelta({
+          sessionID: call.sessionID,
+          messageID: call.messageID,
+          partID: call.partID,
+          field: "raw",
+          delta,
+        })
+        yield* session.touch(call.sessionID)
+      })
+
       const isFilePart = (value: unknown): value is SessionV1.FilePart => Schema.is(SessionV1.FilePart)(value)
 
       const toolResultOutput = (
@@ -334,14 +356,21 @@ const layer = Layer.effect(
             return
 
           // A call already in ctx.toolcalls has its part from tool-input-start, and
-          // neither event writes to it. Reading it back for each delta costs one
-          // database round trip per streamed chunk: thousands for a large edit.
-          case "tool-input-delta":
+          // neither event reads or writes the stored part. Reading it back for each
+          // delta costs one database round trip per streamed chunk: thousands for a
+          // large edit. The streamed text is held in memory and published in batches.
+          case "tool-input-delta": {
             if (!(value.id in ctx.toolcalls)) yield* ensureToolCall(value)
+            const call = ctx.toolcalls[value.id]
+            if (!call) return
+            call.inputText = (call.inputText ?? "") + value.text
+            yield* publishToolInput(value.id, false)
             return
+          }
 
           case "tool-input-end": {
             if (!(value.id in ctx.toolcalls)) yield* ensureToolCall(value)
+            yield* publishToolInput(value.id, true)
             return
           }
 

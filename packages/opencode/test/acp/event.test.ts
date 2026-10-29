@@ -381,6 +381,41 @@ describe("acp event routing", () => {
     ).toEqual(["agent_thought_chunk", "agent_thought_chunk"])
   })
 
+  it("documentor: forwards a pending tool call's streamed arguments as an input delta", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_tool", cwd: "/workspace" }))
+    await Effect.runPromise(
+      harness.session.recordPartMetadata({
+        sessionId: "ses_tool",
+        messageId: "msg_tool",
+        partId: "part_tool",
+        partType: "tool",
+        role: "assistant",
+        toolCallId: "call_patch",
+      }),
+    )
+
+    await harness.subscription.handle({
+      ...textDelta("ses_tool", "msg_tool", "part_tool", '{"patchText":"*** Begin'),
+      properties: {
+        sessionID: "ses_tool",
+        messageID: "msg_tool",
+        partID: "part_tool",
+        field: "raw",
+        delta: '{"patchText":"*** Begin',
+      },
+    } as Event)
+
+    expect(harness.updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "call_patch",
+        status: "pending",
+        _meta: { opencode: { messageId: "msg_tool", parentId: null, inputDelta: '{"patchText":"*** Begin' } },
+      },
+    ])
+  })
+
   it("uses reasoning part ids as ACP thought message boundaries", async () => {
     const harness = createHarness()
     await createKnownSession(harness.session, "ses_reasoning", {
