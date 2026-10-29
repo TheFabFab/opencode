@@ -870,6 +870,67 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
   ),
 )
 
+it.live("documentor: session.processor effect tests publish a tool call's streamed arguments as raw deltas", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+
+        yield* llm.tool("lookup", { query: "weather" })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "tool")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const deltas: Array<{ partID: string; delta: string }> = []
+        const off = yield* events.listen((evt) => {
+          if (evt.type !== MessageV2.Event.PartDelta.type) return Effect.void
+          const data = evt.data as typeof MessageV2.Event.PartDelta.data.Type
+          if (data.sessionID === chat.id && data.field === "raw") deltas.push({ partID: data.partID, delta: data.delta })
+          return Effect.void
+        })
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "tool" }],
+          tools: {
+            lookup: tool({
+              description: "Look up information",
+              inputSchema: z.object({ query: z.string() }),
+              execute: async (input) => ({ title: "Weather lookup", output: `result:${input.query}`, metadata: {} }),
+            }),
+          },
+        })
+
+        yield* off
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
+        expect(deltas.length).toBeGreaterThan(0)
+        expect(deltas.every((item) => item.partID === call?.id)).toBe(true)
+        expect(deltas.map((item) => item.delta).join("")).toBe(JSON.stringify({ query: "weather" }))
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests mark pending tools as aborted on cleanup", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
