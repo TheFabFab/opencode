@@ -61,6 +61,12 @@ export type OpencodeUpdateMeta = {
      * streamed as, so a client drops what it showed.
      */
     removed?: true
+    /**
+     * The compaction summary this update names ended without finishing:
+     * stopped, or failed after its retries. Sent once, on an empty
+     * `agent_message_chunk` that also carries `summary: true`.
+     */
+    interrupted?: true
   }
 }
 
@@ -93,6 +99,7 @@ export class Subscription {
   // opencode publishes before any part of the message, or by one lookup on a miss; a failed lookup holds a null
   // parent. Forgotten when the session goes idle and when the event stream disconnects.
   private readonly messageParents = new Map<string, Map<string, Promise<AssistantLink>>>()
+  private readonly interruptedSummaries = new Set<string>()
   private readonly permission: ACPPermission.Handler
   private connected = false
   private started = false
@@ -261,6 +268,18 @@ export class Subscription {
     const session = await Effect.runPromise(this.input.session.tryGet(info.sessionID))
     if (!session) return
     this.recordMessage(info)
+    if (info.role !== "assistant" || info.summary !== true || !info.error || !info.time.completed) return
+    if (this.interruptedSummaries.has(info.id)) return
+    this.interruptedSummaries.add(info.id)
+    await this.input.connection.sessionUpdate({
+      sessionId: session.id,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        messageId: info.id,
+        content: { type: "text", text: "" },
+        _meta: { opencode: { ...linkMeta(info.id, assistantLink(info)).opencode, interrupted: true } },
+      },
+    })
   }
 
   // Only assistant messages: updates name the assistant message they belong to, never a user message.

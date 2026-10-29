@@ -954,6 +954,36 @@ describe("documentor: acp update message meta", () => {
     ])
   })
 
+  it("documentor: announces once a compaction summary that ended without finishing", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_cut", cwd: "/workspace" }))
+    const summary = {
+      ...assistantInfoWithParent("ses_cut", "msg_summary", "msg_compaction"),
+      mode: "compaction",
+      agent: "compaction",
+      summary: true,
+    } satisfies Message
+    const stopped = {
+      ...summary,
+      time: { created: 1, completed: 2 },
+      error: { name: "MessageAbortedError", data: { message: "Aborted" } },
+    } as Message
+
+    await harness.subscription.handle(messageUpdated(summary))
+    await harness.subscription.handle(messageUpdated({ ...summary, time: { created: 1, completed: 2 } } as Message))
+    await harness.subscription.handle(messageUpdated(stopped))
+    await harness.subscription.handle(messageUpdated(stopped))
+
+    expect(harness.updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg_summary",
+        content: { type: "text", text: "" },
+        _meta: { opencode: { messageId: "msg_summary", parentId: "msg_compaction", summary: true, interrupted: true } },
+      },
+    ])
+  })
+
   it("documentor: marks a compaction summary found by lookup", async () => {
     const fetched = assistantMessage("ses_summary_fetch", "msg_summary", "part_text", "text")
     const harness = createHarness({ msg_summary: { ...fetched, info: { ...fetched.info, summary: true } } })
