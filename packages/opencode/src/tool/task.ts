@@ -7,6 +7,7 @@ import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
+import { Provider } from "@/provider/provider"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
@@ -178,10 +179,14 @@ export const TaskTool = Tool.define(
       if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
       const variant = msg.info.variant
 
-      const model = next.model ?? {
+      const caller = {
         modelID: msg.info.modelID,
         providerID: msg.info.providerID,
       }
+      // documentor: the partner of the calling turn's model, then the agent's own model
+      const partner = next.models?.[`${caller.providerID}/${caller.modelID}`]
+      const chosen = partner ? Provider.parseModel(partner) : next.model
+      const model = chosen ?? caller
       const metadata = {
         parentSessionId: ctx.sessionID,
         sessionId: nextSession.id,
@@ -206,7 +211,7 @@ export const TaskTool = Tool.define(
             modelID: model.modelID,
             providerID: model.providerID,
           },
-          variant: next.model ? undefined : variant,
+          variant: chosen ? undefined : variant,
           agent: next.name,
           parts,
         })
