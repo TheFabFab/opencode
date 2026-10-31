@@ -18,6 +18,7 @@ import {
 } from "@opencode-ai/llm"
 import type { LLMClientShape } from "@opencode-ai/llm/route"
 import { LLMNative } from "./native-request"
+import { isAnthropicFamily, isOpenAIFamily } from "@/provider/family"
 
 export type RuntimeStatus =
   | { readonly type: "supported"; readonly apiKey: string; readonly baseURL?: string }
@@ -52,12 +53,12 @@ function statusWithFetch(
   fetch: typeof globalThis.fetch | undefined,
 ): RuntimeStatus {
   const providerID = input.model.providerID
-  if (providerID !== "openai" && providerID !== "anthropic" && !providerID.startsWith("opencode"))
+  if (!isOpenAIFamily(providerID) && !isAnthropicFamily(providerID) && !providerID.startsWith("opencode"))
     return { type: "unsupported", reason: "provider is not openai, opencode, or anthropic" }
   const npm = input.model.api.npm
   if (npm !== "@ai-sdk/openai" && npm !== "@ai-sdk/openai-compatible" && npm !== "@ai-sdk/anthropic")
     return { type: "unsupported", reason: "provider package is not OpenAI, OpenAI-compatible, or Anthropic" }
-  if (input.auth?.type === "oauth" && !(input.provider.id === "openai" && fetch)) {
+  if (input.auth?.type === "oauth" && !(isOpenAIFamily(input.provider.id) && fetch)) {
     return { type: "unsupported", reason: "OAuth auth requires a provider fetch override" }
   }
 
@@ -146,7 +147,7 @@ export function stream(input: StreamInput): StreamResult {
 }
 
 function providerFetch(input: Pick<StreamInput, "provider" | "auth">): typeof globalThis.fetch | undefined {
-  if (input.provider.id !== "openai" || input.auth?.type !== "oauth") return undefined
+  if (!isOpenAIFamily(input.provider.id) || input.auth?.type !== "oauth") return undefined
   const value: unknown = input.provider.options.fetch
   if (typeof value !== "function") return undefined
   return value as typeof globalThis.fetch

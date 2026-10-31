@@ -1,6 +1,6 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
-import { OAUTH_DUMMY_KEY } from "../../auth"
+import { OAUTH_DUMMY_KEY, isProxied } from "../../auth"
 import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
@@ -112,6 +112,9 @@ interface CodexAuthPluginOptions {
   issuer?: string
   codexApiEndpoint?: string
   experimentalWebSockets?: boolean
+  // The provider id this instance serves. DocuMentor's proxy registers the OpenAI
+  // family under its own id, and each id gets an instance of its own.
+  providerID?: string
 }
 
 async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: PkceCodes): Promise<TokenResponse> {
@@ -273,6 +276,7 @@ function waitForOAuthCallback(pkce: PkceCodes, state: string): Promise<TokenResp
 export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPluginOptions = {}): Promise<Hooks> {
   const issuer = options.issuer ?? ISSUER
   const codexApiEndpoint = options.codexApiEndpoint ?? CODEX_API_ENDPOINT
+  const providerID = options.providerID ?? "openai"
   let websocketFetchInstalled = false
   const websocketFetches: Array<ReturnType<typeof OpenAIWebSocketPool.createWebSocketFetch>> = []
 
@@ -286,7 +290,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
       for (const websocketFetch of websocketFetches) websocketFetch.remove(input.event.properties.info.id)
     },
     provider: {
-      id: "openai",
+      id: providerID,
       async models(provider, ctx) {
         if (ctx.auth?.type !== "oauth") return provider.models
 
@@ -326,16 +330,19 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
       },
     },
     auth: {
-      provider: "openai",
+      provider: providerID,
       async loader(getAuth) {
         const auth = await getAuth()
-        const websocketFetch = options.experimentalWebSockets
-          ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: fetch })
-          : undefined
+        // The credential proxy speaks HTTP only.
+        const websocketFetch =
+          options.experimentalWebSockets && !isProxied(auth)
+            ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: fetch })
+            : undefined
         if (websocketFetch) {
           websocketFetches.push(websocketFetch)
           websocketFetchInstalled = true
         }
+        // A proxied api-key entry needs no fetch: the provider's baseURL is its proxyBaseURL.
         if (auth.type !== "oauth") return websocketFetch ? { fetch: websocketFetch } : {}
 
         let refreshPromise:
@@ -365,14 +372,17 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
               return websocketFetch ? websocketFetch(requestInput, init) : fetch(requestInput, init)
 
             const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
+            // A proxied entry holds a ticket the proxy swaps for the real token. It is
+            // never refreshed, and nothing it signs leaves for a host but the proxy.
+            const proxyBaseURL = isProxied(currentAuth) ? currentAuth.proxyBaseURL.replace(/\/+$/, "") : undefined
 
-            if (!currentAuth.access || currentAuth.expires < Date.now()) {
+            if (!proxyBaseURL && (!currentAuth.access || currentAuth.expires < Date.now())) {
               if (!refreshPromise) {
                 refreshPromise = refreshAccessToken(currentAuth.refresh, issuer)
                   .then(async (tokens) => {
                     const accountId = extractAccountId(tokens) || authWithAccount.accountId
                     await input.client.auth.set({
-                      path: { id: "openai" },
+                      path: { id: providerID },
                       body: {
                         type: "oauth",
                         refresh: tokens.refresh_token,
@@ -411,14 +421,25 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
               }
             }
             headers.set("authorization", `Bearer ${currentAuth.access}`)
-            if (authWithAccount.accountId) {
-              headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
-            }
 
             const parsed =
               requestInput instanceof URL
                 ? requestInput
                 : new URL(typeof requestInput === "string" ? requestInput : requestInput.url)
+
+            // The proxy adds the account id and residency headers itself.
+            if (proxyBaseURL) {
+              const target = /\/(responses|chat\/completions)$/.test(parsed.pathname)
+                ? `${proxyBaseURL}/codex/responses`
+                : parsed.href.startsWith(`${proxyBaseURL}/`)
+                  ? parsed.href
+                  : `${proxyBaseURL}${parsed.pathname}${parsed.search}`
+              return fetch(target, OpenAIWebSocketPool.withoutInternalHeaders({ ...init, body: init?.body, headers }))
+            }
+
+            if (authWithAccount.accountId) {
+              headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
+            }
             const rewrite = parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")
             const url = rewrite ? new URL(codexApiEndpoint) : parsed
             if (rewrite) {
@@ -436,128 +457,133 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
           },
         }
       },
-      methods: [
-        {
-          label: "ChatGPT Pro/Plus (browser)",
-          type: "oauth",
-          authorize: async () => {
-            const { redirectUri } = await startOAuthServer()
-            const pkce = await generatePKCE()
-            const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)).buffer)
-            const authUrl = buildAuthorizeUrl(redirectUri, pkce, state)
+      // A login under another id would write real ChatGPT tokens there; the proxied
+      // ids are provisioned from outside.
+      methods:
+        providerID !== "openai"
+          ? []
+          : [
+              {
+                label: "ChatGPT Pro/Plus (browser)",
+                type: "oauth",
+                authorize: async () => {
+                  const { redirectUri } = await startOAuthServer()
+                  const pkce = await generatePKCE()
+                  const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)).buffer)
+                  const authUrl = buildAuthorizeUrl(redirectUri, pkce, state)
 
-            const callbackPromise = waitForOAuthCallback(pkce, state)
+                  const callbackPromise = waitForOAuthCallback(pkce, state)
 
-            return {
-              url: authUrl,
-              instructions: "Complete authorization in your browser. This window will close automatically.",
-              method: "auto" as const,
-              callback: async () => {
-                const tokens = await callbackPromise
-                stopOAuthServer()
-                const accountId = extractAccountId(tokens)
-                return {
-                  type: "success" as const,
-                  refresh: tokens.refresh_token,
-                  access: tokens.access_token,
-                  expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-                  accountId,
-                }
+                  return {
+                    url: authUrl,
+                    instructions: "Complete authorization in your browser. This window will close automatically.",
+                    method: "auto" as const,
+                    callback: async () => {
+                      const tokens = await callbackPromise
+                      stopOAuthServer()
+                      const accountId = extractAccountId(tokens)
+                      return {
+                        type: "success" as const,
+                        refresh: tokens.refresh_token,
+                        access: tokens.access_token,
+                        expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+                        accountId,
+                      }
+                    },
+                  }
+                },
               },
-            }
-          },
-        },
-        {
-          label: "ChatGPT Pro/Plus (headless)",
-          type: "oauth",
-          authorize: async () => {
-            const deviceResponse = await fetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "User-Agent": `opencode/${InstallationVersion}`,
-              },
-              body: JSON.stringify({ client_id: CLIENT_ID }),
-            })
-
-            if (!deviceResponse.ok) throw new Error("Failed to initiate device authorization")
-
-            const deviceData = (await deviceResponse.json()) as {
-              device_auth_id: string
-              user_code: string
-              interval: string
-            }
-            const interval = Math.max(parseInt(deviceData.interval) || 5, 1) * 1000
-
-            return {
-              url: `${ISSUER}/codex/device`,
-              instructions: `Enter code: ${deviceData.user_code}`,
-              method: "auto" as const,
-              async callback() {
-                while (true) {
-                  const response = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
+              {
+                label: "ChatGPT Pro/Plus (headless)",
+                type: "oauth",
+                authorize: async () => {
+                  const deviceResponse = await fetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
                     method: "POST",
                     headers: {
                       "Content-Type": "application/json",
                       "User-Agent": `opencode/${InstallationVersion}`,
                     },
-                    body: JSON.stringify({
-                      device_auth_id: deviceData.device_auth_id,
-                      user_code: deviceData.user_code,
-                    }),
+                    body: JSON.stringify({ client_id: CLIENT_ID }),
                   })
 
-                  if (response.ok) {
-                    const data = (await response.json()) as {
-                      authorization_code: string
-                      code_verifier: string
-                    }
+                  if (!deviceResponse.ok) throw new Error("Failed to initiate device authorization")
 
-                    const tokenResponse = await fetch(`${ISSUER}/oauth/token`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                      body: new URLSearchParams({
-                        grant_type: "authorization_code",
-                        code: data.authorization_code,
-                        redirect_uri: `${ISSUER}/deviceauth/callback`,
-                        client_id: CLIENT_ID,
-                        code_verifier: data.code_verifier,
-                      }).toString(),
-                    })
-
-                    if (!tokenResponse.ok) {
-                      throw new Error(`Token exchange failed: ${tokenResponse.status}`)
-                    }
-
-                    const tokens: TokenResponse = await tokenResponse.json()
-
-                    return {
-                      type: "success" as const,
-                      refresh: tokens.refresh_token,
-                      access: tokens.access_token,
-                      expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-                      accountId: extractAccountId(tokens),
-                    }
+                  const deviceData = (await deviceResponse.json()) as {
+                    device_auth_id: string
+                    user_code: string
+                    interval: string
                   }
+                  const interval = Math.max(parseInt(deviceData.interval) || 5, 1) * 1000
 
-                  if (response.status !== 403 && response.status !== 404) {
-                    return { type: "failed" as const }
+                  return {
+                    url: `${ISSUER}/codex/device`,
+                    instructions: `Enter code: ${deviceData.user_code}`,
+                    method: "auto" as const,
+                    async callback() {
+                      while (true) {
+                        const response = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            "User-Agent": `opencode/${InstallationVersion}`,
+                          },
+                          body: JSON.stringify({
+                            device_auth_id: deviceData.device_auth_id,
+                            user_code: deviceData.user_code,
+                          }),
+                        })
+
+                        if (response.ok) {
+                          const data = (await response.json()) as {
+                            authorization_code: string
+                            code_verifier: string
+                          }
+
+                          const tokenResponse = await fetch(`${ISSUER}/oauth/token`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                            body: new URLSearchParams({
+                              grant_type: "authorization_code",
+                              code: data.authorization_code,
+                              redirect_uri: `${ISSUER}/deviceauth/callback`,
+                              client_id: CLIENT_ID,
+                              code_verifier: data.code_verifier,
+                            }).toString(),
+                          })
+
+                          if (!tokenResponse.ok) {
+                            throw new Error(`Token exchange failed: ${tokenResponse.status}`)
+                          }
+
+                          const tokens: TokenResponse = await tokenResponse.json()
+
+                          return {
+                            type: "success" as const,
+                            refresh: tokens.refresh_token,
+                            access: tokens.access_token,
+                            expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+                            accountId: extractAccountId(tokens),
+                          }
+                        }
+
+                        if (response.status !== 403 && response.status !== 404) {
+                          return { type: "failed" as const }
+                        }
+
+                        await sleep(interval + OAUTH_POLLING_SAFETY_MARGIN_MS)
+                      }
+                    },
                   }
-
-                  await sleep(interval + OAUTH_POLLING_SAFETY_MARGIN_MS)
-                }
+                },
               },
-            }
-          },
-        },
-        {
-          label: "Manually enter API Key",
-          type: "api",
-        },
-      ],
+              {
+                label: "Manually enter API Key",
+                type: "api",
+              },
+            ],
     },
     "chat.headers": async (input, output) => {
-      if (input.model.providerID !== "openai") return
+      if (input.model.providerID !== providerID) return
       output.headers.originator = "opencode"
       output.headers["User-Agent"] = `opencode/${InstallationVersion} (${os.platform()} ${os.release()}; ${os.arch()})`
       output.headers["session-id"] = input.sessionID
@@ -567,7 +593,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
       if (websocketFetchInstalled && input.agent === "title") output.headers[OpenAIWebSocketPool.TITLE_HEADER] = "true"
     },
     "chat.params": async (input, output) => {
-      if (input.model.providerID !== "openai") return
+      if (input.model.providerID !== providerID) return
       // Match codex cli
       output.maxOutputTokens = undefined
     },
