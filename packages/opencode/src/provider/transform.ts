@@ -4,6 +4,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import type * as Provider from "./provider"
 import type * as ModelsDev from "@opencode-ai/core/models-dev"
 import { iife } from "@/util/iife"
+import { isAnthropicFamily, isOpenAIFamily } from "./family"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
@@ -382,7 +383,7 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
 
   for (const msg of unique([...system, ...final])) {
     const useMessageLevelOptions =
-      model.providerID === "anthropic" ||
+      isAnthropicFamily(model.providerID) ||
       model.providerID.includes("bedrock") ||
       model.api.npm === "@ai-sdk/amazon-bedrock"
     const shouldUseContentOptions = !useMessageLevelOptions && Array.isArray(msg.content) && msg.content.length > 0
@@ -469,7 +470,7 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
     options.cacheControl !== undefined &&
     (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/google-vertex/anthropic")
   if (
-    (model.providerID === "anthropic" ||
+    (isAnthropicFamily(model.providerID) ||
       model.providerID === "google-vertex-anthropic" ||
       model.api.id.includes("anthropic") ||
       model.api.id.includes("claude") ||
@@ -1233,7 +1234,7 @@ export function options(input: {
 
   // openai and providers using openai package should set store to false by default.
   if (
-    input.model.providerID === "openai" ||
+    isOpenAIFamily(input.model.providerID) ||
     input.model.api.npm === "@ai-sdk/openai" ||
     input.model.api.npm === "@ai-sdk/github-copilot" ||
     input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle" ||
@@ -1390,7 +1391,7 @@ export function options(input: {
 export function smallOptions(model: Provider.Model) {
   const small = Object.values(model.variants ?? {})[0] ?? {}
   if (
-    model.providerID === "openai" ||
+    isOpenAIFamily(model.providerID) ||
     model.api.npm === "@ai-sdk/openai" ||
     model.api.npm === "@ai-sdk/github-copilot" ||
     model.api.npm === "@ai-sdk/xai"

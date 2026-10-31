@@ -31,6 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { isOpenAIFamily, providerFamily } from "./family"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -1680,7 +1681,13 @@ const layer = Layer.effect(
           mergeProvider(providerID, patch)
         }
 
-        for (const [id, fn] of Object.entries(custom(dep))) {
+        // A loader serves its own id and every provider id of its family.
+        const loaders = Object.entries(custom(dep)).flatMap(([id, fn]) =>
+          [id, ...Object.keys(database).filter((key) => key !== id && providerFamily(key) === id)].map(
+            (key) => [key, fn] as const,
+          ),
+        )
+        for (const [id, fn] of loaders) {
           const providerID = ProviderV2.ID.make(id)
           if (disabled.has(providerID)) continue
           const data = database[providerID]
@@ -1738,7 +1745,7 @@ const layer = Layer.effect(
               // These chat aliases are invalid for the special handling in the
               // built-in providers below, but custom providers may support them.
               (modelID === "gpt-5-chat-latest" &&
-                (providerID === ProviderV2.ID.openai ||
+                (isOpenAIFamily(providerID) ||
                   providerID === ProviderV2.ID.githubCopilot ||
                   providerID === ProviderV2.ID.openrouter)) ||
               (providerID === ProviderV2.ID.openrouter && modelID === "openai/gpt-5-chat")
