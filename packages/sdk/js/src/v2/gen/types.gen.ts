@@ -113,6 +113,7 @@ export type OAuth = {
   expires: number
   accountId?: string
   enterpriseUrl?: string
+  proxyBaseURL?: string
 }
 
 export type ApiAuth = {
@@ -121,6 +122,7 @@ export type ApiAuth = {
   metadata?: {
     [key: string]: string
   }
+  proxyBaseURL?: string
 }
 
 export type WellKnownAuth = {
