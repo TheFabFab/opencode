@@ -1692,6 +1692,9 @@ export type PermissionConfig =
 
 export type AgentConfig = {
   model?: string
+  models?: {
+    [key: string]: string
+  }
   variant?: string
   temperature?: number
   top_p?: number
@@ -1716,6 +1719,9 @@ export type AgentConfig = {
   [key: string]:
     | unknown
     | string
+    | {
+        [key: string]: string
+      }
     | number
     | {
         [key: string]: boolean
@@ -2390,6 +2396,9 @@ export type Agent = {
     providerID: string
   }
   variant?: string
+  models?: {
+    [key: string]: string
+  }
   prompt?: string
   options: {
     [key: string]: unknown

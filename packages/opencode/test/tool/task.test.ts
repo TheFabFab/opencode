@@ -284,6 +284,93 @@ describe("tool.task", () => {
     }),
   )
 
+  const runPaired = (subagent_type: string, onPrompt: (input: SessionPrompt.PromptInput) => void) =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      return yield* def.execute(
+        { description: "inspect bug", prompt: "look into the cache key path", subagent_type },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ onPrompt }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+    })
+
+  it.instance(
+    "documentor: a helper runs on the partner of the calling turn's model, without its variant",
+    () =>
+      Effect.gen(function* () {
+        let seen: SessionPrompt.PromptInput | undefined
+        const result = yield* runPaired("scout", (input) => (seen = input))
+        expect(seen?.model).toEqual({ providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("helper-model") })
+        expect(seen?.variant).toBeUndefined()
+        expect(result.metadata.model).toEqual({ providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("helper-model") })
+      }),
+    {
+      config: {
+        agent: {
+          scout: {
+            mode: "subagent",
+            model: "test/fixed-model",
+            models: { "test/test-model": "test/helper-model" },
+          },
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "documentor: a helper without a partner for the calling model runs on its fixed model",
+    () =>
+      Effect.gen(function* () {
+        let seen: SessionPrompt.PromptInput | undefined
+        yield* runPaired("scout", (input) => (seen = input))
+        expect(seen?.model).toEqual({ providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("fixed-model") })
+        expect(seen?.variant).toBeUndefined()
+      }),
+    {
+      config: {
+        agent: {
+          scout: { mode: "subagent", model: "test/fixed-model", models: { "other/chat": "test/helper-model" } },
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "documentor: a helper with neither runs on the calling turn's model and variant",
+    () =>
+      Effect.gen(function* () {
+        let seen: SessionPrompt.PromptInput | undefined
+        yield* runPaired("scout", (input) => (seen = input))
+        expect(seen?.model).toEqual({ providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") })
+        expect(seen?.variant).toBe("xhigh")
+      }),
+    { config: { agent: { scout: { mode: "subagent", models: { "other/chat": "test/helper-model" } } } } },
+  )
+
+  // An agent key OpenCode does not know is moved into options, and options
+  // are sent to the provider on every request.
+  it.instance(
+    "documentor: an agent's models never reach its provider options",
+    () =>
+      Effect.gen(function* () {
+        const agents = yield* Agent.Service
+        const scout = yield* agents.get("scout")
+        expect(scout.models).toEqual({ "test/test-model": "test/helper-model" })
+        expect(scout.options).not.toHaveProperty("models")
+      }),
+    { config: { agent: { scout: { mode: "subagent", models: { "test/test-model": "test/helper-model" } } } } },
+  )
+
   it.instance("execute surfaces child errors with a resumable task_id", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
@@ -785,6 +872,57 @@ describe("tool.task", () => {
       expect(result.output).toContain(`state="running"`)
       expect(job?.status).toBe("running")
     }),
+  )
+
+  // The report of a background helper opens a turn on the chat's agent; the
+  // helper's partner must not leak into it.
+  background.instance(
+    "documentor: the follow-up after a paired background helper runs on the chat's model",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const injected = defer<SessionPrompt.PromptInput>()
+        let helper: SessionPrompt.PromptInput | undefined
+        const promptOps: TaskPromptOps = {
+          ...stubOps(),
+          prompt: (input) =>
+            Effect.sync(() => {
+              if (input.sessionID === chat.id) {
+                injected.resolve(input)
+                return reply(input, "injected")
+              }
+              helper = input
+              return reply(input, "background done")
+            }),
+        }
+
+        yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            background: true,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        const followUp = yield* Effect.promise(() => injected.promise)
+        expect(helper?.model).toEqual({ providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("helper-model") })
+        expect(followUp.model).toBeUndefined()
+        expect(followUp.agent).toBe("build")
+      }),
+    { config: { agent: { general: { models: { "test/test-model": "test/helper-model" } } } } },
   )
 
   background.instance("background task completion waits for running updates", () =>
