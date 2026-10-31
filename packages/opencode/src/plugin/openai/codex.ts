@@ -457,125 +457,130 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
           },
         }
       },
-      methods: [
-        {
-          label: "ChatGPT Pro/Plus (browser)",
-          type: "oauth",
-          authorize: async () => {
-            const { redirectUri } = await startOAuthServer()
-            const pkce = await generatePKCE()
-            const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)).buffer)
-            const authUrl = buildAuthorizeUrl(redirectUri, pkce, state)
+      // A login under another id would write real ChatGPT tokens there; the proxied
+      // ids are provisioned from outside.
+      methods:
+        providerID !== "openai"
+          ? []
+          : [
+              {
+                label: "ChatGPT Pro/Plus (browser)",
+                type: "oauth",
+                authorize: async () => {
+                  const { redirectUri } = await startOAuthServer()
+                  const pkce = await generatePKCE()
+                  const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)).buffer)
+                  const authUrl = buildAuthorizeUrl(redirectUri, pkce, state)
 
-            const callbackPromise = waitForOAuthCallback(pkce, state)
+                  const callbackPromise = waitForOAuthCallback(pkce, state)
 
-            return {
-              url: authUrl,
-              instructions: "Complete authorization in your browser. This window will close automatically.",
-              method: "auto" as const,
-              callback: async () => {
-                const tokens = await callbackPromise
-                stopOAuthServer()
-                const accountId = extractAccountId(tokens)
-                return {
-                  type: "success" as const,
-                  refresh: tokens.refresh_token,
-                  access: tokens.access_token,
-                  expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-                  accountId,
-                }
+                  return {
+                    url: authUrl,
+                    instructions: "Complete authorization in your browser. This window will close automatically.",
+                    method: "auto" as const,
+                    callback: async () => {
+                      const tokens = await callbackPromise
+                      stopOAuthServer()
+                      const accountId = extractAccountId(tokens)
+                      return {
+                        type: "success" as const,
+                        refresh: tokens.refresh_token,
+                        access: tokens.access_token,
+                        expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+                        accountId,
+                      }
+                    },
+                  }
+                },
               },
-            }
-          },
-        },
-        {
-          label: "ChatGPT Pro/Plus (headless)",
-          type: "oauth",
-          authorize: async () => {
-            const deviceResponse = await fetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "User-Agent": `opencode/${InstallationVersion}`,
-              },
-              body: JSON.stringify({ client_id: CLIENT_ID }),
-            })
-
-            if (!deviceResponse.ok) throw new Error("Failed to initiate device authorization")
-
-            const deviceData = (await deviceResponse.json()) as {
-              device_auth_id: string
-              user_code: string
-              interval: string
-            }
-            const interval = Math.max(parseInt(deviceData.interval) || 5, 1) * 1000
-
-            return {
-              url: `${ISSUER}/codex/device`,
-              instructions: `Enter code: ${deviceData.user_code}`,
-              method: "auto" as const,
-              async callback() {
-                while (true) {
-                  const response = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
+              {
+                label: "ChatGPT Pro/Plus (headless)",
+                type: "oauth",
+                authorize: async () => {
+                  const deviceResponse = await fetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
                     method: "POST",
                     headers: {
                       "Content-Type": "application/json",
                       "User-Agent": `opencode/${InstallationVersion}`,
                     },
-                    body: JSON.stringify({
-                      device_auth_id: deviceData.device_auth_id,
-                      user_code: deviceData.user_code,
-                    }),
+                    body: JSON.stringify({ client_id: CLIENT_ID }),
                   })
 
-                  if (response.ok) {
-                    const data = (await response.json()) as {
-                      authorization_code: string
-                      code_verifier: string
-                    }
+                  if (!deviceResponse.ok) throw new Error("Failed to initiate device authorization")
 
-                    const tokenResponse = await fetch(`${ISSUER}/oauth/token`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                      body: new URLSearchParams({
-                        grant_type: "authorization_code",
-                        code: data.authorization_code,
-                        redirect_uri: `${ISSUER}/deviceauth/callback`,
-                        client_id: CLIENT_ID,
-                        code_verifier: data.code_verifier,
-                      }).toString(),
-                    })
-
-                    if (!tokenResponse.ok) {
-                      throw new Error(`Token exchange failed: ${tokenResponse.status}`)
-                    }
-
-                    const tokens: TokenResponse = await tokenResponse.json()
-
-                    return {
-                      type: "success" as const,
-                      refresh: tokens.refresh_token,
-                      access: tokens.access_token,
-                      expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-                      accountId: extractAccountId(tokens),
-                    }
+                  const deviceData = (await deviceResponse.json()) as {
+                    device_auth_id: string
+                    user_code: string
+                    interval: string
                   }
+                  const interval = Math.max(parseInt(deviceData.interval) || 5, 1) * 1000
 
-                  if (response.status !== 403 && response.status !== 404) {
-                    return { type: "failed" as const }
+                  return {
+                    url: `${ISSUER}/codex/device`,
+                    instructions: `Enter code: ${deviceData.user_code}`,
+                    method: "auto" as const,
+                    async callback() {
+                      while (true) {
+                        const response = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            "User-Agent": `opencode/${InstallationVersion}`,
+                          },
+                          body: JSON.stringify({
+                            device_auth_id: deviceData.device_auth_id,
+                            user_code: deviceData.user_code,
+                          }),
+                        })
+
+                        if (response.ok) {
+                          const data = (await response.json()) as {
+                            authorization_code: string
+                            code_verifier: string
+                          }
+
+                          const tokenResponse = await fetch(`${ISSUER}/oauth/token`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                            body: new URLSearchParams({
+                              grant_type: "authorization_code",
+                              code: data.authorization_code,
+                              redirect_uri: `${ISSUER}/deviceauth/callback`,
+                              client_id: CLIENT_ID,
+                              code_verifier: data.code_verifier,
+                            }).toString(),
+                          })
+
+                          if (!tokenResponse.ok) {
+                            throw new Error(`Token exchange failed: ${tokenResponse.status}`)
+                          }
+
+                          const tokens: TokenResponse = await tokenResponse.json()
+
+                          return {
+                            type: "success" as const,
+                            refresh: tokens.refresh_token,
+                            access: tokens.access_token,
+                            expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+                            accountId: extractAccountId(tokens),
+                          }
+                        }
+
+                        if (response.status !== 403 && response.status !== 404) {
+                          return { type: "failed" as const }
+                        }
+
+                        await sleep(interval + OAUTH_POLLING_SAFETY_MARGIN_MS)
+                      }
+                    },
                   }
-
-                  await sleep(interval + OAUTH_POLLING_SAFETY_MARGIN_MS)
-                }
+                },
               },
-            }
-          },
-        },
-        {
-          label: "Manually enter API Key",
-          type: "api",
-        },
-      ],
+              {
+                label: "Manually enter API Key",
+                type: "api",
+              },
+            ],
     },
     "chat.headers": async (input, output) => {
       if (input.model.providerID !== providerID) return

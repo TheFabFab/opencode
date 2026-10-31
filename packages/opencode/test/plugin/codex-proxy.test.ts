@@ -285,3 +285,13 @@ describe("plugin.codex proxy mode through the provider service", () => {
     ).pipe(Effect.ensuring(Effect.sync(() => server[Symbol.dispose]())))
   })
 })
+
+describe("plugin.codex login methods", () => {
+  test("only the openai instance offers interactive login", async () => {
+    const openai = await CodexAuthPlugin(pluginInput())
+    const proxied = await CodexAuthPlugin(pluginInput(), { providerID: "documentor-openai" })
+
+    expect(openai.auth!.methods.length).toBeGreaterThan(0)
+    expect(proxied.auth!.methods).toEqual([])
+  })
+})
