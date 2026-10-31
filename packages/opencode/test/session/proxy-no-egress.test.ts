@@ -1,8 +1,7 @@
+import { egress } from "../lib/egress-recorder"
 import { afterAll, afterEach, beforeAll, expect } from "bun:test"
 import { Effect, Stream } from "effect"
 import fs from "fs/promises"
-import http from "node:http"
-import https from "node:https"
 import os from "os"
 import path from "path"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -33,19 +32,7 @@ const previous = {
   noFetch: Flag.OPENCODE_DISABLE_MODELS_FETCH,
 }
 
-const seen: { hosts: string[]; authorization: string[]; paths: string[] } = { hosts: [], authorization: [], paths: [] }
-const originalFetch = globalThis.fetch
-const originalHttpRequest = http.request
-const originalHttpsRequest = https.request
-
-const hostOf = (input: unknown) => {
-  if (typeof input === "string") return new URL(input).hostname
-  if (input instanceof URL) return input.hostname
-  if (input instanceof Request) return new URL(input.url).hostname
-  const options = input as { hostname?: string; host?: string }
-  return options.hostname ?? options.host ?? "localhost"
-}
-
+const seen: { authorization: string[]; paths: string[] } = { authorization: [], paths: [] }
 // Other test files in the same process may have written auth.json already; the turn must not touch it.
 const authFile = () =>
   fs.readFile(path.join(process.env.XDG_DATA_HOME!, "opencode", "auth.json"), "utf8").catch(() => undefined)
@@ -90,18 +77,6 @@ beforeAll(() => {
       })
     },
   })
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    seen.hosts.push(hostOf(input))
-    return originalFetch(input, init)
-  }) as typeof fetch
-  http.request = ((...args: unknown[]) => {
-    seen.hosts.push(hostOf(args[0]))
-    return (originalHttpRequest as (...a: unknown[]) => http.ClientRequest)(...args)
-  }) as typeof http.request
-  https.request = ((...args: unknown[]) => {
-    seen.hosts.push(hostOf(args[0]))
-    return (originalHttpsRequest as (...a: unknown[]) => http.ClientRequest)(...args)
-  }) as typeof https.request
 })
 
 afterEach(async () => {
@@ -109,9 +84,6 @@ afterEach(async () => {
 })
 
 afterAll(async () => {
-  globalThis.fetch = originalFetch
-  http.request = originalHttpRequest
-  https.request = originalHttpsRequest
   Flag.OPENCODE_MODELS_PATH = previous.modelsPath
   Flag.OPENCODE_DISABLE_MODELS_FETCH = previous.noFetch
   if (previous.auth === undefined) delete process.env.OPENCODE_AUTH_CONTENT
@@ -122,8 +94,43 @@ afterAll(async () => {
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node])))
 
+const turn = Effect.fnUntraced(function* () {
+  const model = yield* Provider.use.getModel(ProviderV2.ID.make("documentor-openai"), ModelV2.ID.make("gpt-5.5"))
+  const sessionID = SessionID.make("session-no-egress")
+  const agent = {
+    name: "test",
+    mode: "primary",
+    options: {},
+    permission: [{ permission: "*", pattern: "*", action: "allow" }],
+  } satisfies Agent.Info
+  const user = {
+    id: MessageID.make("msg_user-no-egress"),
+    sessionID,
+    role: "user",
+    time: { created: Date.now() },
+    agent: agent.name,
+    model: { providerID: ProviderV2.ID.make("documentor-openai"), modelID: model.id },
+  } satisfies SessionV1.User
+
+  return yield* Effect.exit(
+    LLM.Service.use((svc) =>
+      svc
+        .stream({
+          user,
+          sessionID,
+          model,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+        .pipe(Stream.runDrain),
+    ),
+  )
+})
+
 it.instance(
-  "in proxy mode a turn reaches no host but loopback and writes nothing under XDG_DATA_HOME",
+  "in proxy mode a turn reaches no host but loopback and writes nothing to auth.json",
   () =>
     Effect.gen(function* () {
       process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
@@ -136,42 +143,42 @@ it.instance(
         },
       })
       const before = yield* Effect.promise(() => authFile())
-      const model = yield* Provider.use.getModel(ProviderV2.ID.make("documentor-openai"), ModelV2.ID.make("gpt-5.5"))
-      const sessionID = SessionID.make("session-no-egress")
-      const agent = {
-        name: "test",
-        mode: "primary",
-        options: {},
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      } satisfies Agent.Info
-      const user = {
-        id: MessageID.make("msg_user-no-egress"),
-        sessionID,
-        role: "user",
-        time: { created: Date.now() },
-        agent: agent.name,
-        model: { providerID: ProviderV2.ID.make("documentor-openai"), modelID: model.id },
-      } satisfies SessionV1.User
+      egress.hosts.length = 0
 
-      yield* LLM.Service.use((svc) =>
-        svc
-          .stream({
-            user,
-            sessionID,
-            model,
-            agent,
-            system: ["You are a helpful assistant."],
-            messages: [{ role: "user", content: "Hello" }],
-            tools: {},
-          })
-          .pipe(Stream.runDrain),
-      )
+      const exit = yield* turn()
 
+      expect(egress.hosts.length).toBeGreaterThan(0)
+      expect([...new Set(egress.hosts)].filter((host) => host !== "127.0.0.1")).toEqual([])
+      expect(exit._tag).toBe("Success")
       expect(seen.authorization).toEqual([`Bearer ${ticket}`])
       expect(seen.paths).toEqual(["/provider/documentor-openai/codex/responses"])
-      expect(seen.hosts.length).toBeGreaterThan(0)
-      expect([...new Set(seen.hosts)]).toEqual(["127.0.0.1"])
       expect(yield* Effect.promise(() => authFile())).toBe(before)
     }),
   { config: { enabled_providers: ["documentor-openai"] } },
+)
+
+// The recorder must see a request that leaves loopback. An entry without a
+// proxyBaseURL stands for a proxied entry whose proxyBaseURL was ignored: the
+// provider's own baseURL is used. It points at a host that never resolves.
+it.instance(
+  "the host recorder sees a turn that is not routed through the proxy",
+  () =>
+    Effect.gen(function* () {
+      process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+        "documentor-openai": { type: "api", key: ticket },
+      })
+      egress.hosts.length = 0
+
+      const exit = yield* turn()
+
+      expect(exit._tag).toBe("Failure")
+      expect(egress.hosts).toContain("example.invalid")
+      expect([...new Set(egress.hosts)].filter((host) => host !== "127.0.0.1")).not.toEqual([])
+    }),
+  {
+    config: {
+      enabled_providers: ["documentor-openai"],
+      provider: { "documentor-openai": { options: { baseURL: "https://example.invalid/v1" } } },
+    },
+  },
 )
