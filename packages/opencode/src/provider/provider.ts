@@ -1715,6 +1715,19 @@ const layer = Layer.effect(
           mergeProvider(providerID, partial)
         }
 
+        // A proxied entry holds a placeholder that only its proxy may receive, so the
+        // provider's baseURL is the entry's proxyBaseURL whatever config or a loader set.
+        // A baseURL under it is kept: documentor-anthropic's adds the SDK's /v1.
+        for (const [id, entry] of Object.entries(auths)) {
+          if (!Auth.isProxied(entry)) continue
+          const provider = providers[ProviderV2.ID.make(id)]
+          if (!provider) continue
+          const base = entry.proxyBaseURL.replace(/\/+$/, "")
+          const current = provider.options.baseURL
+          if (typeof current === "string" && (current === base || current.startsWith(`${base}/`))) continue
+          provider.options = { ...provider.options, baseURL: base }
+        }
+
         const gitlab = ProviderV2.ID.make("gitlab")
         if (discoveryLoaders[gitlab] && providers[gitlab] && isProviderAllowed(gitlab)) {
           yield* Effect.promise(async () => {

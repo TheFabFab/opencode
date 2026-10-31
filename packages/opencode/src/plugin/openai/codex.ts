@@ -342,6 +342,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
           websocketFetches.push(websocketFetch)
           websocketFetchInstalled = true
         }
+        // A proxied api-key entry needs no fetch: the provider's baseURL is its proxyBaseURL.
         if (auth.type !== "oauth") return websocketFetch ? { fetch: websocketFetch } : {}
 
         let refreshPromise:
