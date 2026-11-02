@@ -31,6 +31,7 @@ import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/l
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
+import { isOpenAIFamily } from "@/provider/family"
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -385,7 +386,7 @@ const layer = Layer.effect(
 
         // TODO: clean this up so provider specific logic doesnt bleed over
         const authInfo = yield* auth.get(model.providerID).pipe(Effect.orDie)
-        const isOpenaiOauth = model.providerID === "openai" && authInfo?.type === "oauth"
+        const isOpenaiOauth = isOpenAIFamily(model.providerID) && authInfo?.type === "oauth"
 
         const params = {
           experimental_telemetry: {

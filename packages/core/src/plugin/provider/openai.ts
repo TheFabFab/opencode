@@ -181,7 +181,8 @@ export const OpenAIPlugin = define({
     )
     yield* ctx.aisdk.language(
       Effect.fn(function* (evt) {
-        if (evt.model.providerID !== ProviderV2.ID.openai) return
+        // Core cannot import opencode's providerFamily; this is its one-entry copy.
+        if (evt.model.providerID !== ProviderV2.ID.openai && evt.model.providerID !== "documentor-openai") return
         evt.language = evt.sdk.responses(evt.model.api.id)
       }),
     )

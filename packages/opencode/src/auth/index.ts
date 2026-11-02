@@ -18,12 +18,14 @@ export class Oauth extends Schema.Class<Oauth>("OAuth")({
   expires: NonNegativeInt,
   accountId: Schema.optional(Schema.String),
   enterpriseUrl: Schema.optional(Schema.String),
+  proxyBaseURL: Schema.optional(Schema.String),
 }) {}
 
 export class Api extends Schema.Class<Api>("ApiAuth")({
   type: Schema.Literal("api"),
   key: Schema.String,
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  proxyBaseURL: Schema.optional(Schema.String),
 }) {}
 
 export class WellKnown extends Schema.Class<WellKnown>("WellKnownAuth")({
@@ -34,6 +36,14 @@ export class WellKnown extends Schema.Class<WellKnown>("WellKnownAuth")({
 
 export const Info = Schema.Union([Oauth, Api, WellKnown]).annotate({ discriminator: "type", identifier: "Auth" })
 export type Info = Schema.Schema.Type<typeof Info>
+
+// A proxied entry holds a placeholder, not a credential, and names the proxy that
+// swaps it for the real one. It is never written to disk and never replaced.
+export const isProxied = <T>(entry: T): entry is T & { proxyBaseURL: string } =>
+  typeof entry === "object" && entry !== null && "proxyBaseURL" in entry && typeof entry.proxyBaseURL === "string"
+
+const withoutProxied = (data: Record<string, unknown>) =>
+  Object.fromEntries(Object.entries(data).filter(([, entry]) => !isProxied(entry)))
 
 export class AuthError extends Schema.TaggedErrorClass<AuthError>()("AuthError", {
   message: Schema.String,
@@ -73,19 +83,21 @@ const layer = Layer.effect(
     const set = Effect.fn("Auth.set")(function* (key: string, info: Info) {
       const norm = key.replace(/\/+$/, "")
       const data = yield* all()
+      if (isProxied(info) || [key, norm, norm + "/"].some((item) => isProxied(data[item]))) return
       if (norm !== key) delete data[key]
       delete data[norm + "/"]
       yield* fsys
-        .writeJson(file, { ...data, [norm]: info }, 0o600)
+        .writeJson(file, { ...withoutProxied(data), [norm]: info }, 0o600)
         .pipe(Effect.mapError(fail("Failed to write auth data")))
     })
 
     const remove = Effect.fn("Auth.remove")(function* (key: string) {
       const norm = key.replace(/\/+$/, "")
       const data = yield* all()
+      if ([key, norm].some((item) => isProxied(data[item]))) return
       delete data[key]
       delete data[norm]
-      yield* fsys.writeJson(file, data, 0o600).pipe(Effect.mapError(fail("Failed to write auth data")))
+      yield* fsys.writeJson(file, withoutProxied(data), 0o600).pipe(Effect.mapError(fail("Failed to write auth data")))
     })
 
     return Service.of({ get, all, set, remove })

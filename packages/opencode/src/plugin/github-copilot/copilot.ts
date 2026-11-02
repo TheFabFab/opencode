@@ -5,6 +5,7 @@ import { iife } from "@/util/iife"
 import { setTimeout as sleep } from "node:timers/promises"
 import { CopilotModels } from "./models"
 import { MessageV2 } from "@/session/message-v2"
+import { isProxied } from "@/auth"
 
 const CLIENT_ID = "Ov23li8tweQw6odWQebz"
 const API_VERSION = "2026-06-01"
@@ -25,6 +26,12 @@ function getUrls(domain: string) {
 
 function base(enterpriseUrl?: string) {
   return enterpriseUrl ? `https://copilot-api.${normalizeDomain(enterpriseUrl)}` : "https://api.githubcopilot.com"
+}
+
+// A proxied entry holds a ticket, and everything it signs goes to the proxy.
+function authBase(auth: object) {
+  if (isProxied(auth)) return auth.proxyBaseURL.replace(/\/+$/, "")
+  return base("enterpriseUrl" in auth && typeof auth.enterpriseUrl === "string" ? auth.enterpriseUrl : undefined)
 }
 
 // Check if a message is a synthetic user msg used to attach an image from a tool call
@@ -62,13 +69,14 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
       async models(provider, ctx) {
         if (ctx.auth?.type !== "oauth") {
           models = {}
-          return Object.fromEntries(Object.entries(provider.models).map(([id, model]) => [id, fix(model, base())]))
+          const url = ctx.auth ? authBase(ctx.auth) : base()
+          return Object.fromEntries(Object.entries(provider.models).map(([id, model]) => [id, fix(model, url)]))
         }
 
         const auth = ctx.auth
 
         return CopilotModels.get(
-          base(auth.enterpriseUrl),
+          authBase(auth),
           {
             ...(provider.options?.headers as Record<string, string> | undefined),
             Authorization: `Bearer ${auth.refresh}`,
@@ -86,7 +94,7 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
           .catch((error) => {
             models = {}
             return Object.fromEntries(
-              Object.entries(provider.models).map(([id, model]) => [id, fix(model, base(auth.enterpriseUrl))]),
+              Object.entries(provider.models).map(([id, model]) => [id, fix(model, authBase(auth))]),
             )
           })
       },
@@ -104,6 +112,13 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
             if (info.type !== "oauth") return fetch(request, init)
 
             const url = request instanceof URL ? request.href : typeof request === "string" ? request : request.url
+            const proxyBaseURL = isProxied(info) ? authBase(info) : undefined
+            const target = iife(() => {
+              if (!proxyBaseURL || url.startsWith(`${proxyBaseURL}/`)) return request
+              const parsed = new URL(url)
+              const rewritten = `${proxyBaseURL}${parsed.pathname}${parsed.search}`
+              return request instanceof Request ? new Request(rewritten, request) : rewritten
+            })
             const { isVision, isAgent } = iife(() => {
               try {
                 const body = typeof init?.body === "string" ? JSON.parse(init.body) : init?.body
@@ -172,7 +187,7 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
             delete headers["x-api-key"]
             delete headers["authorization"]
 
-            return fetch(request, {
+            return fetch(target, {
               ...init,
               headers,
             })

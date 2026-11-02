@@ -3,6 +3,7 @@ import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
 import type { ProviderV2 } from "@opencode-ai/core/provider"
 import { isContextOverflow } from "@opencode-ai/llm"
+import { isOpenAIFamily } from "./family"
 
 export class HeaderTimeoutError extends Error {
   public override readonly name = "ProviderHeaderTimeoutError"
@@ -185,7 +186,10 @@ export function parseAPICallError(input: { providerID: ProviderV2.ID; error: API
     type: "api_error",
     message: m,
     statusCode: input.error.statusCode,
-    isRetryable: input.providerID.startsWith("openai") ? isOpenAiErrorRetryable(input.error) : input.error.isRetryable,
+    isRetryable:
+      input.providerID.startsWith("openai") || isOpenAIFamily(input.providerID)
+        ? isOpenAiErrorRetryable(input.error)
+        : input.error.isRetryable,
     responseHeaders: input.error.responseHeaders,
     responseBody: input.error.responseBody,
     metadata,

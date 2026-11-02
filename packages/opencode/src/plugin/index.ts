@@ -66,11 +66,16 @@ export function experimentalWebSocketsEnabled(input: { enabled: boolean; channel
 // Built-in plugins that are directly imported (not installed from npm)
 function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
   return [
-    // Temporary rollout: pre-release builds use WebSockets by default; releases require explicit opt-in.
-    (input) =>
-      CodexAuthPlugin(input, {
-        experimentalWebSockets: experimentalWebSocketsEnabled({ enabled: flags.experimentalWebSockets }),
-      }),
+    // One codex instance per OpenAI-family provider id.
+    ...["openai", "documentor-openai"].map(
+      (providerID): PluginInstance =>
+        (input) =>
+          CodexAuthPlugin(input, {
+            providerID,
+            // Temporary rollout: pre-release builds use WebSockets by default; releases require explicit opt-in.
+            experimentalWebSockets: experimentalWebSocketsEnabled({ enabled: flags.experimentalWebSockets }),
+          }),
+    ),
     CopilotAuthPlugin,
     ModalPlugin,
     GitlabAuthPlugin,
